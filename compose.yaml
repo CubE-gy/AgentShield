@@ -1,0 +1,28 @@
+services:
+  postgres-dev:
+    image: postgres:16
+    container_name: agentshield-postgres-dev
+    environment:
+      POSTGRES_USER: ${AGENTSHIELD_DEV_DB_USER}
+      POSTGRES_PASSWORD: ${AGENTSHIELD_DEV_DB_PASSWORD}
+      POSTGRES_DB: ${AGENTSHIELD_DEV_DB_NAME}
+    ports:
+      - "5432:5432"
+    volumes:
+      - agentshield_dev_data:/var/lib/postgresql/data
+
+  postgres-test:
+    image: postgres:16
+    container_name: agentshield-postgres-test
+    environment:
+      POSTGRES_USER: ${AGENTSHIELD_TEST_DB_USER}
+      POSTGRES_PASSWORD: ${AGENTSHIELD_TEST_DB_PASSWORD}
+      POSTGRES_DB: ${AGENTSHIELD_TEST_DB_NAME}
+    ports:
+      - "5433:5432"
+    volumes:
+      - agentshield_test_data:/var/lib/postgresql/data
+
+volumes:
+  agentshield_dev_data:
+  agentshield_test_data:
