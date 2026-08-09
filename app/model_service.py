@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.audit_repository import save_audit_record
 from app.model_provider import (
+    ModelProvider,
     MockModelProvider,
     ModelResult,
     build_audit_record_data,
@@ -23,14 +24,15 @@ def call_model_and_save_audit(
     agent_id: str,
     prompt: str,
     scenario: str,
+    provider: ModelProvider | None = None
 ):
-    provider = MockModelProvider()
+    if provider is None:
+        provider = MockModelProvider(scenario=scenario)
 
     started_at = perf_counter()
 
     result = provider.call(
         prompt=prompt,
-        scenario=scenario,
     )
 
     latency_ms = round((perf_counter() - started_at) * 1000)

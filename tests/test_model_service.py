@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Base
 from app.model_service import call_model_and_save_audit
-from app.model_provider import ModelResult
+from app.model_provider import MockModelProvider, ModelResult
 
 
 TEST_DATABASE_URL = (
@@ -178,3 +178,41 @@ def test_unknown_scenario_is_saved_as_invalid_scenario(
         "model_status=failed;error_code=MODEL_INVALID_SCENARIO"
     )
     assert "请查询订单状态" not in saved_record.summary
+
+    def test_model_service_uses_injected_provider(
+            test_session: Session,
+    ):
+        provider = MockModelProvider()
+
+        service_result = call_model_and_save_audit(
+            session=test_session,
+            request_id="req-injected-provider",
+            tenant_id="tenant-demo",
+            agent_id="agent-support",
+            prompt="请查询订单状态",
+            scenario="success",
+            provider=provider,
+        )
+
+        assert service_result.model_result.status == "success"
+        assert service_result.model_result.content == "这是Mock模型的正常回答"
+        assert service_result.audit_record.status == "success"
+
+def test_model_service_uses_injected_provider(
+    test_session: Session,
+):
+    provider = MockModelProvider(scenario="success")
+
+    service_result = call_model_and_save_audit(
+        session=test_session,
+        request_id="req-injected-provider",
+        tenant_id="tenant-demo",
+        agent_id="agent-support",
+        prompt="请查询订单状态",
+        scenario="success",
+        provider=provider,
+    )
+
+    assert service_result.model_result.status == "success"
+    assert service_result.model_result.content == "这是Mock模型的正常回答"
+    assert service_result.audit_record.status == "success"

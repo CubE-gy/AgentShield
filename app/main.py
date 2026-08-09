@@ -3,6 +3,8 @@ from pydantic import BaseModel
 
 from app.model_provider import MockModelProvider
 from app.model_service import call_model_and_save_audit
+from app.provider_factory import create_provider
+from app.settings import Settings
 from app.db import SessionLocal
 
 class ModelTestRequest(BaseModel):
@@ -12,9 +14,9 @@ class ModelTestRequest(BaseModel):
     prompt: str
     scenario: str
 
-app = FastAPI(title="AgentShield")
+settings = Settings()
 
-model_provider = MockModelProvider()
+app = FastAPI(title="AgentShield")
 
 @app.get("/health")
 def health() -> dict[str, str]:
@@ -24,6 +26,11 @@ def health() -> dict[str, str]:
 def model_test(request: ModelTestRequest):
     session = SessionLocal()
 
+    provider = create_provider(settings)
+
+    if isinstance(provider, MockModelProvider):
+        provider.scenario = request.scenario
+
     try:
         service_record = call_model_and_save_audit(
             session=session,
@@ -32,6 +39,7 @@ def model_test(request: ModelTestRequest):
             agent_id=request.agent_id,
             prompt=request.prompt,
             scenario=request.scenario,
+            provider=provider,
         )
 
         return {

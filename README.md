@@ -13,16 +13,18 @@ AgentShield 是面向企业 Agent/RAG 系统的 LLM 安全网关、模型调用�
 - Docker Compose 管理的 PostgreSQL 开发库和测试库；
 - 请求审计记录的保存、读取和基础错误处理；
 - 可替换的模型调用结构和 Mock 模型（只用于测试的模拟模型服务）；
+- 统一的 `ModelProvider` 协议、Provider 注入和 Provider 工厂；
+- `OpenAIModelProvider` 真实 Provider 骨架、默认 HTTP 调用函数和假 HTTP 测试替身；
 - 模型正常、拒绝、失败、超时、格式错误和未知场景的测试；
 - 审计摘要不保存完整 Prompt 或完整模型回答。
 
 当前最近一次阶段6完整测试结果为：
 
 ```text
-33 passed
+51 passed
 ```
 
-阶段6代码尚未创建新的 Git 提交；README 和阶段6代码仍需在确认后一起保存。
+本阶段尚未使用真实 API Key，也尚未发送真实模型网络请求；真实 Provider 已通过假 HTTP 覆盖正常响应、连接失败、超时、HTTP 错误和格式错误。
 
 ## 项目目标
 
@@ -165,7 +167,7 @@ POST http://127.0.0.1:8000/model/test
 阶段6当前验证结果：
 
 ```text
-33 passed
+51 passed
 ```
 
 测试数据库使用端口 `5433`，测试代码不会主动操作开发数据库 `5432`。测试通过只代表已覆盖的场景符合预期，不代表已经完成高并发或完整生产部署。
@@ -201,8 +203,17 @@ POST http://127.0.0.1:8000/model/test
 - FastAPI 的 `/model/test` 调用服务层，不在路由中写死回答；
 - 模型结果和脱敏审计摘要一起保存到 PostgreSQL；
 - 测试验证 Prompt 和完整模型回答不会进入审计摘要；
-- 阶段6验证结果：`33 passed`；
-- 仍需完成 README、代码差异和 Git 安全检查后，再创建新的 Git 保存点。
+- 定义统一的 `ModelProvider` 协议：`call(prompt) -> ModelResult`；
+- Mock 场景保存在 `MockModelProvider` 创建参数中，不进入通用 Provider 调用签名；
+- 服务函数支持从外部注入 Provider；
+- 增加 `OpenAIModelProvider` 骨架；
+- 真实 Provider 支持默认 HTTP 调用函数和可注入的测试替身；
+- 配置 `AGENTSHIELD_MODEL_PROVIDER=mock` 时使用 Mock；
+- 配置 `AGENTSHIELD_MODEL_PROVIDER=real` 时选择真实 Provider；
+- 没有 API Key 时返回 `MODEL_API_KEY_MISSING`，不会发送网络请求；
+- 假 HTTP 测试已覆盖正常响应、连接失败、超时、HTTP 错误和格式错误；
+- 阶段6验证结果：`51 passed`；
+- 本阶段尚未使用真实 API Key，也尚未执行真实模型请求。
 
 ## 安全边界
 
@@ -218,7 +229,7 @@ POST http://127.0.0.1:8000/model/test
 
 当前项目是经过测试、可追踪交付的最小实现，不应直接包装成完整生产系统。尚未完成：
 
-- 真实模型 API 接入和供应商切换；
+- 真实模型 API 的实际连通性验证和正式供应商切换；
 - Alembic 数据库迁移、升级和回滚；
 - 用户认证、权限和完整多租户隔离；
 - Redis 限流和消息队列；

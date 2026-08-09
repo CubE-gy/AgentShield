@@ -1,6 +1,10 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+from typing import Protocol, runtime_checkable
+from collections.abc import Callable
+
+import httpx
 
 @dataclass
 class ModelResult:
@@ -8,33 +12,46 @@ class ModelResult:
     content: str | None
     error_code: str | None
 
+@runtime_checkable
+class ModelProvider(Protocol):
+    def call(self, prompt: str) -> ModelResult:
+        ...
+
 class MockModelProvider:
-    def call(self, prompt: str, scenario: str) -> ModelResult:
-        if scenario == "reject":
+    def __init__(self, scenario: str = "success"):
+        self.scenario = scenario
+
+    def call(
+        self,
+        prompt: str,
+    ) -> ModelResult:
+        active_scenario = self.scenario
+
+        if active_scenario == "reject":
             return ModelResult(
-                status = "rejected",
-                content = None,
-                error_code = "MODEL_REFUSED",
+                status="rejected",
+                content=None,
+                error_code="MODEL_REFUSED",
             )
-        elif scenario == "failure":
+        elif active_scenario == "failure":
             return ModelResult(
                 status = "failed",
                 content = None,
                 error_code = "MODEL_UNAVAILABLE",
             )
-        elif scenario == "timeout":
+        elif active_scenario == "timeout":
             return ModelResult(
                 status = "timeout",
                 content = None,
                 error_code = "MODEL_TIMEOUT",
             )
-        elif scenario == "malformed":
+        elif active_scenario == "malformed":
             return ModelResult(
                 status = "failed",
                 content = None,
                 error_code = "MODEL_INVALID_RESPONSE",
             )
-        elif scenario == "success":
+        elif active_scenario == "success":
             return ModelResult(
                 status="success",
                 content="这是Mock模型的正常回答",
@@ -47,6 +64,101 @@ class MockModelProvider:
             error_code="MODEL_INVALID_SCENARIO",
         )
 
+def default_http_post(
+    url: str,
+    *,
+    headers: dict,
+    json: dict,
+    timeout: float,
+) -> httpx.Response:
+    return httpx.post(
+        url,
+        headers=headers,
+        json=json,
+        timeout=timeout,
+    )
+
+class OpenAIModelProvider:
+    def __init__(
+        self,
+        api_key: str | None,
+        model: str,
+        base_url: str,
+        http_post: Callable | None = None,
+    ):
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url
+        self.http_post = (
+            default_http_post
+            if http_post is None
+            else http_post
+        )
+
+    def call(self, prompt: str) -> ModelResult:
+        if not self.api_key:
+            return ModelResult(
+                status="failed",
+                content=None,
+                error_code="MODEL_API_KEY_MISSING",
+            )
+
+        url = f"{self.base_url.rstrip('/')}/chat/completions"
+
+        try:
+            response: httpx.Response = self.http_post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ],
+                },
+                timeout=30.0,
+            )
+
+        except httpx.ConnectError:
+            return ModelResult(
+                status="failed",
+                content=None,
+                error_code="MODEL_API_UNAVAILABLE",
+            )
+        except httpx.ReadTimeout:
+            return ModelResult(
+                status="timeout",
+                content=None,
+                error_code="MODEL_API_TIMEOUT",
+            )
+
+        if response.status_code >= 400:
+            return ModelResult(
+                status="failed",
+                content=None,
+                error_code=f"MODEL_API_HTTP_{response.status_code}",
+            )
+
+        try:
+            response_data = response.json()
+            content = response_data["choices"][0]["message"]["content"]
+        except(KeyError, IndexError, TypeError, ValueError):
+            return ModelResult(
+                status="failed",
+                content=None,
+                error_code="MODEL_INVALID_RESPONSE",
+            )
+
+        return ModelResult(
+            status="success",
+            content=content,
+            error_code=None,
+        )
 
 def build_audit_summary(result: ModelResult) -> str:
     # 这里不读取完整回答，避免敏感内容进入审计摘要

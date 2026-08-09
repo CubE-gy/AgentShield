@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app import main as main_module
 from app.main import app
 from app.models import Base
-from app.model_provider import ModelResult
+from app.model_provider import ModelResult, MockModelProvider
 from app.models import AuditRecord
 
 TEST_DATABASE_URL = (
@@ -177,6 +177,8 @@ def test_model_test_endpoint_calls_model_service(monkeypatch):
     assert called["agent_id"] == "agent-support"
     assert called["prompt"] == "请查询订单状态"
     assert called["scenario"] == "success"
+    assert isinstance(called["provider"], MockModelProvider)
+    assert called["provider"].scenario == "success"
 
 def test_model_test_endpoint_rejects_unknown_scenario():
     response = client.post(
@@ -196,3 +198,73 @@ def test_model_test_endpoint_rejects_unknown_scenario():
         "content": None,
         "error_code": "MODEL_INVALID_SCENARIO",
     }
+
+def test_model_test_endpoint_passes_scenario_to_provider(monkeypatch):
+    captured = {}
+
+    fake_provider = MockModelProvider(scenario="success")
+
+    def fake_create_provider(settings):
+        captured["settings"] = settings
+        captured["provider"] = fake_provider
+        return fake_provider
+
+    monkeypatch.setattr(
+        main_module,
+        "create_provider",
+        fake_create_provider,
+    )
+
+    response = client.post(
+        "/model/test",
+        json={
+            "request_id": f"req-api-provider-scenario-{uuid4().hex}",
+            "tenant_id": "tenant-demo",
+            "agent_id": "agent-support",
+            "prompt": "请查询订单状态",
+            "scenario": "timeout",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "timeout"
+    assert captured["provider"].scenario == "timeout"
+
+def test_app_uses_provider_factory(monkeypatch):
+    captured = {}
+
+    class FakeSettings:
+        model_provider = "mock"
+
+    fake_provider = MockModelProvider(scenario="success")
+
+    def fake_create_provider(settings):
+        captured["settings"] = settings
+        return fake_provider
+
+    monkeypatch.setattr(
+        main_module,
+        "create_provider",
+        fake_create_provider,
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        FakeSettings(),
+    )
+
+    response = client.post(
+        "/model/test",
+        json={
+            "request_id": f"req-api-factory-{uuid4().hex}",
+            "tenant_id": "tenant-demo",
+            "agent_id": "agent-support",
+            "prompt": "请查询订单状态",
+            "scenario": "success",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
+    assert captured["settings"].model_provider == "mock"

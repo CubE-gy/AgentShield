@@ -1,16 +1,18 @@
 from app.model_provider import (
+    ModelProvider,
     MockModelProvider,
     ModelResult,
+    OpenAIModelProvider,
     build_audit_summary,
     build_audit_record_data,
 )
+import httpx
 
 def test_mock_model_return_success():
-    provider = MockModelProvider()
+    provider = MockModelProvider(scenario = "success")
 
     result = provider.call(
         prompt = "请查询订单状态",
-        scenario = "success",
     )
 
     assert result.status == "success"
@@ -18,11 +20,10 @@ def test_mock_model_return_success():
     assert result.error_code is None
 
 def test_mock_model_returns_rejection():
-    provider = MockModelProvider()
+    provider = MockModelProvider(scenario = "reject")
 
     result = provider.call(
         prompt = "请执行不允许的操作",
-        scenario = "reject",
     )
 
     assert result.status == "rejected"
@@ -30,11 +31,10 @@ def test_mock_model_returns_rejection():
     assert  result.error_code == "MODEL_REFUSED"
 
 def test_mock_model_returns_failure():
-    provider = MockModelProvider()
+    provider = MockModelProvider(scenario="failure")
 
     result = provider.call(
         prompt="请查询订单状态",
-        scenario="failure",
     )
 
     assert result.status == "failed"
@@ -42,11 +42,10 @@ def test_mock_model_returns_failure():
     assert result.error_code == "MODEL_UNAVAILABLE"
 
 def test_mock_model_returns_timeout():
-    provider = MockModelProvider()
+    provider = MockModelProvider(scenario="timeout")
 
     result = provider.call(
         prompt="请查询订单状态",
-        scenario="timeout",
     )
 
     assert result.status == "timeout"
@@ -54,11 +53,10 @@ def test_mock_model_returns_timeout():
     assert result.error_code == "MODEL_TIMEOUT"
 
 def test_mock_model_returns_malformed_response_error():
-    provider = MockModelProvider()
+    provider = MockModelProvider(scenario="malformed")
 
     result = provider.call(
         prompt="请查询订单状态",
-        scenario="malformed",
     )
 
     assert result.status == "failed"
@@ -119,6 +117,17 @@ def test_build_audit_summary_for_malformed_response():
     )
     assert "格式错误" not in summary
 
+def test_mock_model_rejects_unknown_scenario():
+    provider = MockModelProvider(scenario="abc")
+
+    result = provider.call(
+        prompt="请查询订单状态",
+    )
+
+    assert result.status == "failed"
+    assert result.content is None
+    assert result.error_code == "MODEL_INVALID_SCENARIO"
+
 def test_build_audit_record_data_from_model_result():
     result = ModelResult(
         status="success",
@@ -166,14 +175,307 @@ def test_build_audit_record_data_keeps_failure_details():
     )
     assert "模型失败时的原文" not in record_data["summary"]
 
-def test_mock_model_rejects_unknown_scenario():
-    provider = MockModelProvider()
+
+def test_mock_provider_matches_model_provider_protocol():
+    provider : ModelProvider = MockModelProvider(
+        scenario="success",
+    )
 
     result = provider.call(
         prompt="请查询订单状态",
-        scenario="abc",
+    )
+
+    assert isinstance(provider, ModelProvider)
+    assert isinstance(result, ModelResult)
+    assert result.status == "success"
+
+def test_mock_provider_stores_scenario_on_creation():
+    provider = MockModelProvider(scenario="timeout")
+
+    result = provider.call(
+        prompt="请查询订单状态",
+    )
+
+    assert result.status == "timeout"
+    assert result.content is None
+    assert result.error_code == "MODEL_TIMEOUT"
+
+def test_openai_provider_without_api_key_returns_safe_error():
+    provider = OpenAIModelProvider(
+        api_key=None,
+        model="test-model",
+        base_url="https://example.invalid",
+    )
+
+    assert isinstance(provider, ModelProvider)
+
+    result = provider.call(
+        prompt="请查询订单状态",
     )
 
     assert result.status == "failed"
     assert result.content is None
-    assert result.error_code == "MODEL_INVALID_SCENARIO"
+    assert result.error_code == "MODEL_API_KEY_MISSING"
+
+def test_openai_provider_default_http_failure_does_not_leak_key():
+    placeholder_key = "test-placeholder-key"
+
+    provider = OpenAIModelProvider(
+        api_key=placeholder_key,
+        model="test-model",
+        base_url="https://example.invalid",
+    )
+
+    result = provider.call(
+        prompt="请查询订单状态",
+    )
+
+    assert result.status == "failed"
+    assert result.content is None
+    assert result.error_code == "MODEL_API_UNAVAILABLE"
+
+    assert placeholder_key not in result.error_code
+
+def test_openai_provider_uses_injected_http_post():
+    captured = {}
+
+    def fake_http_post(
+        url: str,
+        *,
+        headers: dict,
+        json: dict,
+        timeout: float,
+    ) -> httpx.Response:
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+
+        request = httpx.Request("POST", url)
+
+        return httpx.Response(
+            status_code=200,
+            request=request,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "假的真实模型回答",
+                        }
+                    }
+                ]
+            },
+        )
+
+    provider = OpenAIModelProvider(
+        api_key="test-placeholder-key",
+        model="test-model",
+        base_url="https://example.invalid",
+        http_post=fake_http_post,
+    )
+
+    result = provider.call(
+        prompt="请查询订单状态",
+    )
+
+    assert result.status == "success"
+    assert result.content == "假的真实模型回答"
+    assert result.error_code is None
+
+    assert captured["url"] == (
+        "https://example.invalid/chat/completions"
+    )
+    assert captured["headers"]["Authorization"] == (
+        "Bearer test-placeholder-key"
+    )
+    assert captured["json"]["model"] == "test-model"
+    assert captured["json"]["messages"] == [
+        {
+            "role": "user",
+            "content": "请查询订单状态",
+        }
+    ]
+
+def test_openai_provider_handles_network_failure():
+    def fake_http_post(
+        url: str,
+        *,
+        headers: dict,
+        json: dict,
+        timeout: float,
+    ) -> httpx.Response:
+        request = httpx.Request("POST", url)
+
+        raise httpx.ConnectError(
+            "模拟网络连接失败",
+            request=request,
+        )
+
+    provider = OpenAIModelProvider(
+        api_key="test-placeholder-key",
+        model="test-model",
+        base_url="https://example.invalid",
+        http_post=fake_http_post,
+    )
+
+    result = provider.call(
+        prompt="请查询订单状态",
+    )
+
+    assert result.status == "failed"
+    assert result.content is None
+    assert result.error_code == "MODEL_API_UNAVAILABLE"
+
+def test_openai_provider_handles_network_timeout():
+    def fake_http_post(
+        url: str,
+        *,
+        headers: dict,
+        json: dict,
+        timeout: float,
+    ) -> httpx.Response:
+        request = httpx.Request("POST", url)
+
+        raise httpx.ReadTimeout(
+            "模拟网络连接超时",
+            request=request,
+        )
+
+    provider = OpenAIModelProvider(
+        api_key="test-placeholder-key",
+        model="test-model",
+        base_url="https://example.invalid",
+        http_post=fake_http_post,
+    )
+
+    result = provider.call(
+        prompt="请查询订单状态",
+    )
+
+    assert result.status == "timeout"
+    assert result.content is None
+    assert result.error_code == "MODEL_API_TIMEOUT"
+
+def test_openai_provider_handles_malformed_response():
+    def fake_http_post(
+        url: str,
+        *,
+        headers: dict,
+        json: dict,
+        timeout: float,
+    ) -> httpx.Response:
+        request = httpx.Request("POST", url)
+
+        return httpx.Response(
+            status_code=200,
+            request=request,
+            json={
+                "unexpected": "missing choices",
+            },
+        )
+
+    provider = OpenAIModelProvider(
+        api_key="test-placeholder-key",
+        model="test-model",
+        base_url="https://example.invalid",
+        http_post=fake_http_post,
+    )
+
+    result = provider.call(
+        prompt="请查询订单状态",
+    )
+
+    assert result.status == "failed"
+    assert result.content is None
+    assert result.error_code == "MODEL_INVALID_RESPONSE"
+
+def test_openai_provider_handles_http_error_status():
+    def fake_http_post(
+        url: str,
+        *,
+        headers: dict,
+        json: dict,
+        timeout: float,
+    ) -> httpx.Response:
+        request = httpx.Request("POST", url)
+
+        return httpx.Response(
+            status_code=401,
+            request=request,
+            json={
+                "error": {
+                    "message": "模拟认证失败",
+                }
+            },
+        )
+
+    provider = OpenAIModelProvider(
+        api_key="test-placeholder-key",
+        model="test-model",
+        base_url="https://example.invalid",
+        http_post=fake_http_post,
+    )
+
+    result = provider.call(
+        prompt="请查询订单状态",
+    )
+
+    assert result.status == "failed"
+    assert result.content is None
+    assert result.error_code == "MODEL_API_HTTP_401"
+
+
+def test_openai_provider_uses_default_http_post_when_not_injected(
+    monkeypatch,
+):
+    captured = {}
+
+    def fake_default_http_post(
+        url: str,
+        *,
+        headers: dict,
+        json: dict,
+        timeout: float,
+    ) -> httpx.Response:
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+
+        request = httpx.Request("POST", url)
+
+        return httpx.Response(
+            status_code=200,
+            request=request,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "默认 HTTP 函数的模拟回答",
+                        }
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.model_provider.default_http_post",
+        fake_default_http_post,
+    )
+
+    provider = OpenAIModelProvider(
+        api_key="test-placeholder-key",
+        model="test-model",
+        base_url="https://example.invalid",
+    )
+
+    result = provider.call(
+        prompt="请查询订单状态",
+    )
+
+    assert result.status == "success"
+    assert result.content == "默认 HTTP 函数的模拟回答"
+    assert result.error_code is None
+    assert captured["url"] == (
+        "https://example.invalid/chat/completions"
+    )
