@@ -3,7 +3,12 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from app.audit_repository import save_audit_record
+from app.audit_repository import (
+    AuditRecordNotFoundError,
+    DuplicateRequestIdError,
+    get_audit_record,
+    save_audit_record,
+)
 from app.model_provider import (
     ModelProvider,
     MockModelProvider,
@@ -23,11 +28,25 @@ def call_model_and_save_audit(
     tenant_id: str,
     agent_id: str,
     prompt: str,
-    scenario: str,
-    provider: ModelProvider | None = None
+    scenario: str | None = None,
+    provider: ModelProvider | None = None,
 ):
+    try:
+        get_audit_record(
+            session=session,
+            request_id=request_id,
+        )
+    except AuditRecordNotFoundError:
+        pass
+    else:
+        raise DuplicateRequestIdError(
+            f"request_id 已存在：{request_id}"
+        )
+
     if provider is None:
-        provider = MockModelProvider(scenario=scenario)
+        provider = MockModelProvider(
+            scenario=scenario or "success",
+        )
 
     started_at = perf_counter()
 

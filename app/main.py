@@ -14,6 +14,12 @@ class ModelTestRequest(BaseModel):
     prompt: str
     scenario: str
 
+class ModelCallRequest(BaseModel):
+    request_id: str = "req-api-default"
+    tenant_id: str = "tenant-demo"
+    agent_id: str = "agent-support"
+    prompt: str
+
 settings = Settings()
 
 app = FastAPI(title="AgentShield")
@@ -26,10 +32,9 @@ def health() -> dict[str, str]:
 def model_test(request: ModelTestRequest):
     session = SessionLocal()
 
-    provider = create_provider(settings)
-
-    if isinstance(provider, MockModelProvider):
-        provider.scenario = request.scenario
+    provider = MockModelProvider(
+        scenario=request.scenario,
+    )
 
     try:
         service_record = call_model_and_save_audit(
@@ -45,6 +50,29 @@ def model_test(request: ModelTestRequest):
         return {
             "status": service_record.model_result.status,
             "content":service_record.model_result.content,
+            "error_code": service_record.model_result.error_code,
+        }
+    finally:
+        session.close()
+
+@app.post("/model/call")
+def model_call(request: ModelCallRequest):
+    session = SessionLocal()
+    provider = create_provider(settings)
+
+    try:
+        service_record = call_model_and_save_audit(
+            session=session,
+            request_id=request.request_id,
+            tenant_id=request.tenant_id,
+            agent_id=request.agent_id,
+            prompt=request.prompt,
+            provider=provider,
+        )
+
+        return {
+            "status": service_record.model_result.status,
+            "content": service_record.model_result.content,
             "error_code": service_record.model_result.error_code,
         }
     finally:

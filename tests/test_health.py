@@ -199,42 +199,11 @@ def test_model_test_endpoint_rejects_unknown_scenario():
         "error_code": "MODEL_INVALID_SCENARIO",
     }
 
-def test_model_test_endpoint_passes_scenario_to_provider(monkeypatch):
-    captured = {}
-
-    fake_provider = MockModelProvider(scenario="success")
-
-    def fake_create_provider(settings):
-        captured["settings"] = settings
-        captured["provider"] = fake_provider
-        return fake_provider
-
-    monkeypatch.setattr(
-        main_module,
-        "create_provider",
-        fake_create_provider,
-    )
-
-    response = client.post(
-        "/model/test",
-        json={
-            "request_id": f"req-api-provider-scenario-{uuid4().hex}",
-            "tenant_id": "tenant-demo",
-            "agent_id": "agent-support",
-            "prompt": "请查询订单状态",
-            "scenario": "timeout",
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "timeout"
-    assert captured["provider"].scenario == "timeout"
-
-def test_app_uses_provider_factory(monkeypatch):
+def test_model_call_endpoint_uses_provider_factory(monkeypatch):
     captured = {}
 
     class FakeSettings:
-        model_provider = "mock"
+        model_provider = "real"
 
     fake_provider = MockModelProvider(scenario="success")
 
@@ -255,16 +224,101 @@ def test_app_uses_provider_factory(monkeypatch):
     )
 
     response = client.post(
-        "/model/test",
+        "/model/call",
         json={
             "request_id": f"req-api-factory-{uuid4().hex}",
             "tenant_id": "tenant-demo",
             "agent_id": "agent-support",
             "prompt": "请查询订单状态",
-            "scenario": "success",
         },
     )
 
     assert response.status_code == 200
     assert response.json()["status"] == "success"
-    assert captured["settings"].model_provider == "mock"
+    assert captured["settings"].model_provider == "real"
+
+def test_model_call_endpoint_does_not_require_scenario(monkeypatch):
+    captured = {}
+
+    fake_provider = MockModelProvider(scenario="success")
+
+    def fake_create_provider(settings):
+        return fake_provider
+
+    def fake_call_model_and_save_audit(**kwargs):
+        captured.update(kwargs)
+
+        return SimpleNamespace(
+            model_result=ModelResult(
+                status="success",
+                content="正式接口的模拟回答",
+                error_code=None,
+            ),
+            audit_record=SimpleNamespace(
+                request_id=kwargs["request_id"],
+            ),
+        )
+
+    monkeypatch.setattr(
+        main_module,
+        "create_provider",
+        fake_create_provider,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "call_model_and_save_audit",
+        fake_call_model_and_save_audit,
+    )
+
+    response = client.post(
+        "/model/call",
+        json={
+            "request_id": "req-real-api-001",
+            "tenant_id": "tenant-demo",
+            "agent_id": "agent-support",
+            "prompt": "请查询订单状态",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "success",
+        "content": "正式接口的模拟回答",
+        "error_code": None,
+    }
+    assert captured["request_id"] == "req-real-api-001"
+    assert captured["prompt"] == "请查询订单状态"
+    assert captured["provider"] is fake_provider
+    assert "scenario" not in captured
+
+def test_model_test_endpoint_never_uses_provider_factory(
+    monkeypatch,
+):
+    def fail_if_factory_is_called(settings):
+        raise AssertionError(
+            "/model/test 不应该创建真实 Provider"
+        )
+
+    monkeypatch.setattr(
+        main_module,
+        "create_provider",
+        fail_if_factory_is_called,
+    )
+
+    response = client.post(
+        "/model/test",
+        json={
+            "request_id": "req-mock-safety-001",
+            "tenant_id": "tenant-demo",
+            "agent_id": "agent-support",
+            "prompt": "这条内容只能交给 Mock",
+            "scenario": "success",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "success",
+        "content": "这是Mock模型的正常回答",
+        "error_code": None,
+    }

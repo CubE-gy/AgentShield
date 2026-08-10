@@ -6,7 +6,7 @@ AgentShield 是面向企业 Agent/RAG 系统的 LLM 安全网关、模型调用�
 
 ## 当前状态
 
-当前已完成阶段 0～6 的核心功能：
+当前已完成阶段 0～6。阶段 6 完成的内容包括：
 
 - Python 项目环境和 FastAPI 健康检查接口；
 - Git 本地版本记录和 GitHub 远程仓库交付；
@@ -16,15 +16,19 @@ AgentShield 是面向企业 Agent/RAG 系统的 LLM 安全网关、模型调用�
 - 统一的 `ModelProvider` 协议、Provider 注入和 Provider 工厂；
 - `OpenAIModelProvider` 真实 Provider 骨架、默认 HTTP 调用函数和假 HTTP 测试替身；
 - 模型正常、拒绝、失败、超时、格式错误和未知场景的测试；
-- 审计摘要不保存完整 Prompt 或完整模型回答。
+- 审计摘要不保存完整 Prompt 或完整模型回答；
+- Mock 专用的 `/model/test` 与正式 `/model/call` 接口已分离；
+- `/model/test` 强制使用 Mock，不受本机真实 Provider 配置影响；
+- 重复 `request_id` 会在调用 Provider 前被拒绝，避免顺序重试重复产生模型费用；
+- 已使用 APINebula 第三方 OpenAI 兼容服务成功完成一次真实模型调用和安全审计验证。
 
-当前最近一次阶段6完整测试结果为：
+当前最近一次阶段 6 自动测试记录为：
 
 ```text
-51 passed
+54 passed
 ```
 
-本阶段尚未使用真实 API Key，也尚未发送真实模型网络请求；真实 Provider 已通过假 HTTP 覆盖正常响应、连接失败、超时、HTTP 错误和格式错误。
+自动测试只使用 Mock 和假 HTTP，不会访问真实模型或消耗模型费用。真实联网验证使用单独的人工步骤执行。
 
 ## 项目目标
 
@@ -90,6 +94,17 @@ AGENTSHIELD_TEST_DB_NAME=agentshield_test
 
 上面的密码只是占位说明，不能直接作为生产密码使用。真实配置放在本机 `.env`、生产秘密管理系统或部署平台环境变量中。
 
+阶段 6 模型配置名称如下：
+
+```dotenv
+AGENTSHIELD_MODEL_PROVIDER=mock
+AGENTSHIELD_MODEL_API_KEY=
+AGENTSHIELD_MODEL_NAME=gpt-5.6-terra
+AGENTSHIELD_MODEL_BASE_URL=https://api.openai.com/v1
+```
+
+`.env.example` 默认使用 Mock，避免意外联网或产生费用。人工验证第三方兼容服务时，只在本机 `.env` 中设置 `real`、实际模型名称、服务地址和该服务签发的 Key。不得把一家服务的 Key 交给另一家服务。
+
 ## 启动 PostgreSQL
 
 在项目根目录执行：
@@ -125,11 +140,14 @@ docker exec agentshield-postgres-test pg_isready
 
 ## API 使用示例
 
-阶段6提供：
+阶段6提供两个用途分离的接口：
 
 ```text
 POST http://127.0.0.1:8000/model/test
+POST http://127.0.0.1:8000/model/call
 ```
+
+`/model/test` 只使用 Mock，请求中需要 `scenario`。`/model/call` 不接收 `scenario`，并通过本机配置选择正式 Provider。
 
 请求示例：
 
@@ -154,7 +172,38 @@ POST http://127.0.0.1:8000/model/test
 | `malformed` | 模型返回格式错误 | `MODEL_INVALID_RESPONSE` |
 | 其他值 | 无效场景 | `MODEL_INVALID_SCENARIO` |
 
-接口返回模型状态、回答内容和错误码，并把不含完整 Prompt 或完整回答的审计摘要保存到 PostgreSQL。
+两个接口都返回模型状态、回答内容和错误码，并把不含完整 Prompt 或完整回答的审计摘要保存到 PostgreSQL。
+
+### 真实模型人工验证
+
+以下操作会访问外部服务并可能产生费用，不得放入日常自动测试。
+
+1. 在本机 `.env` 中填写兼容服务的真实配置，不要把 Key 写入命令、截图、README 或 Git。
+2. 启动开发数据库，并使用 `pg_isready` 确认显示 `accepting connections`。
+3. 启动 FastAPI：
+
+```powershell
+python -m uvicorn app.main:app
+```
+
+4. 打开 `http://127.0.0.1:8000/docs`，只对 `/model/call` 使用全新的 `request_id` 执行一次无敏感信息的短请求。
+5. 确认响应为 HTTP `200`、`status=success`、`error_code=null`。
+6. 查询同一 `request_id` 的审计记录，确认 `summary=model_status=success`、摘要哈希长度为 `64`，且没有完整 Prompt、完整回答或 Key。
+7. 验证后使用 `Ctrl+C` 停止 FastAPI，防止误操作重复调用。
+
+2026-08-10 已使用 APINebula 第三方 OpenAI 兼容服务进行一次人工验证：
+
+- 模型：`gpt-5.6-terra`；
+- 请求编号：`req-apinebula-real-003`；
+- 接口响应：HTTP `200`、`status=success`、`error_code=null`；
+- 审计记录：`status=success`、`summary=model_status=success`、`summary_hash` 长度 `64`；
+- 服务层记录的调用耗时：`5856 ms`；
+- 安全检查：响应、审计摘要和 Git 状态未显示完整 Key；`.env` 仍被 Git 忽略。
+
+本次人工验证前如实记录了两个失败现象：
+
+- 令牌使用不匹配的用户分组时，第三方服务返回 HTTP `503`，AgentShield 保存了 `MODEL_API_HTTP_503` 失败审计；
+- 调整为可用的 Codex 分组后，重复使用已存在的 `request_id` 导致模型调用后审计保存失败并返回本地 HTTP `500`。已增加服务层前置重复检查，避免顺序重试再次调用 Provider。
 
 ## 运行测试
 
@@ -167,7 +216,7 @@ POST http://127.0.0.1:8000/model/test
 阶段6当前验证结果：
 
 ```text
-51 passed
+54 passed
 ```
 
 测试数据库使用端口 `5433`，测试代码不会主动操作开发数据库 `5432`。测试通过只代表已覆盖的场景符合预期，不代表已经完成高并发或完整生产部署。
@@ -195,7 +244,7 @@ POST http://127.0.0.1:8000/model/test
 - 阶段5验证结果：`7 passed`；
 - 当前表结构仍使用 `Base.metadata.create_all()`，尚未使用 Alembic（数据库表结构版本管理工具）。
 
-### 阶段6：Mock 模型调用与审计流程
+### 阶段6：Mock 与真实模型调用闭环
 
 - 建立模型服务调用和 Mock Provider（模型服务适配层）结构；
 - 模拟正常返回、拒绝、服务失败、超时和格式错误；
@@ -212,13 +261,76 @@ POST http://127.0.0.1:8000/model/test
 - 配置 `AGENTSHIELD_MODEL_PROVIDER=real` 时选择真实 Provider；
 - 没有 API Key 时返回 `MODEL_API_KEY_MISSING`，不会发送网络请求；
 - 假 HTTP 测试已覆盖正常响应、连接失败、超时、HTTP 错误和格式错误；
-- 阶段6验证结果：`51 passed`；
-- 本阶段尚未使用真实 API Key，也尚未执行真实模型请求。
+- 当前自动测试记录：`54 passed`；
+- 日常自动测试不读取本机真实 Provider 配置、不访问网络且不消耗模型费用；
+- 已使用 APINebula 第三方兼容服务成功执行一次真实模型请求；
+- 真实回答经服务层和正式接口返回，并生成不含完整 Prompt、完整回答或 Key 的审计记录；
+- `/model/test` 已强制使用 Mock，重复 `request_id` 已在 Provider 调用前检查。
+
+## 阶段 6～12 路线图
+
+### 阶段6：Mock 与真实模型调用闭环
+
+- 保留可重复、无费用的 Mock 自动测试；
+- 从本机 `.env` 读取真实模型配置，真实密钥不进入代码和 Git；
+- 成功完成一次真实模型请求；
+- 验证真实回答经过服务层返回并生成脱敏审计记录；
+- 将 Mock 专用场景与正式模型接口分离；
+- 日常自动测试不访问真实模型、不消耗模型费用。
+
+### 阶段7：API Key 认证和基础用户隔离
+
+- 请求必须携带 AgentShield API Key；
+- 缺少、错误或停用的 Key 被拒绝；
+- 从认证结果确定租户；
+- 不同租户不能读取彼此的审计记录；
+- 响应、日志和数据库不保存完整 Key。
+
+### 阶段8：Prompt、PII、工具和 SSRF 安全检查
+
+- 按 Prompt Injection、PII、工具允许名单、URL/SSRF 的顺序逐个实现；
+- 高风险请求在调用模型或工具前被阻止；
+- 检测结果和阻止原因进入审计记录；
+- 记录规则的误报、漏报和已知限制；
+- 不把简单关键词匹配描述成完整安全方案。
+
+### 阶段9：攻击评测系统和量化结果
+
+- 在 `evals/` 中建立结构统一的安全样例；
+- 从 30 条可检查样例逐步扩充到 50～100 条；
+- 一条命令批量执行评测；
+- 统计正确结果、误报、漏报和检测耗时；
+- 输出可重复的 JSON 或 CSV 报告；
+- 分析至少三个失败样例。
+
+### 阶段10：Redis 限流、日志和统一错误处理
+
+- 按 API Key 或租户限制单位时间请求数量；
+- 不同租户分别计数；
+- 统一错误格式和请求追踪编号；
+- 明确 Redis 不可用时的行为；
+- 日志不记录完整 Key、完整 Prompt 和数据库密码。
+
+### 阶段11：Docker、数据库迁移和压力测试
+
+- 使用 Docker Compose 启动 FastAPI、PostgreSQL 和 Redis；
+- 使用 Alembic 管理数据库表结构升级和回滚；
+- 在干净环境中重复验证启动步骤；
+- 执行一次固定参数、可重复的基础压力测试；
+- 如实记录延迟、吞吐量、错误和实际发现的性能问题。
+
+### 阶段12：看板、部署、文档和求职材料
+
+- 使用简单看板展示风险和审计数据；
+- 准备三分钟项目演示；
+- 完善 README、架构图、设计取舍和已知限制；
+- 部署可演示版本，或者提供经过验证的本地演示；
+- 完成密钥检查、简历项目描述和面试问题整理。
 
 ## 安全边界
 
-- 不使用真实模型 API Key；
-- 不在源代码中写数据库密码或真实密钥；
+- 真实模型 API Key 只允许保存在本机 `.env`、部署平台环境变量或秘密管理系统；
+- 不在源代码、测试、命令、截图、日志或文档中写数据库密码或真实密钥；
 - `.env` 不提交到 GitHub；
 - 不把完整 Prompt 或完整模型回答写入审计摘要；
 - 测试数据库与开发数据库分开；
@@ -229,18 +341,23 @@ POST http://127.0.0.1:8000/model/test
 
 当前项目是经过测试、可追踪交付的最小实现，不应直接包装成完整生产系统。尚未完成：
 
-- 真实模型 API 的实际连通性验证和正式供应商切换；
+- 官方 OpenAI API 的实际连通性验证；当前只验证了 APINebula 第三方兼容服务；
 - Alembic 数据库迁移、升级和回滚；
 - 用户认证、权限和完整多租户隔离；
-- Redis 限流和消息队列；
+- Prompt Injection、PII、工具和 SSRF 基础安全检查；
+- 可重复的攻击评测数据集和量化报告；
+- Redis 限流、统一错误和安全日志；
 - 高并发压测、连接池调优和故障恢复；
 - 监控、告警、数据库备份和灾难恢复；
-- Prompt Injection、RAG 越权和工具调用安全评测的完整规则集。
+- 看板、部署验证和求职演示材料。
 
 ## 开发约定
 
 - 先明确功能规则，再编写测试，再实现最少代码；
 - 每次只修改一个小功能，修改后先运行相关测试，再运行全部测试；
+- 测试数量不是进度指标；测试必须对应明确行为、安全边界或已经发生的错误；
+- 相同场景不在 Provider、服务和接口三层机械重复，优先合并结构相同的测试；
+- 日常自动测试不访问真实模型、不消耗模型费用，真实联网验证单独执行并记录；
 - 测试失败时先阅读完整错误并判断原因，不直接重写大量代码；
 - README 只描述已经实际验证的内容；
 - 未经确认不执行 `git add`、`git commit` 或 `git push`；

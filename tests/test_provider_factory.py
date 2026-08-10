@@ -5,6 +5,7 @@ from app.settings import Settings
 
 def test_factory_creates_mock_provider_by_default():
     settings = Settings(
+        _env_file=None,
         dev_database_url="postgresql+psycopg://dev_user:dev_password@127.0.0.1:5432/dev_db",
         test_database_url="postgresql+psycopg://test_user:test_password@127.0.0.1:5433/test_db",
     )
@@ -16,6 +17,7 @@ def test_factory_creates_mock_provider_by_default():
 
 def test_factory_creates_openai_provider_when_selected():
     settings = Settings(
+        _env_file=None,
         dev_database_url="postgresql+psycopg://dev_user:dev_password@127.0.0.1:5432/dev_db",
         test_database_url="postgresql+psycopg://test_user:test_password@127.0.0.1:5433/test_db",
         model_provider="real",
@@ -30,6 +32,7 @@ def test_factory_creates_openai_provider_when_selected():
 
 def test_real_provider_without_api_key_returns_safe_error():
     settings = Settings(
+        _env_file=None,
         dev_database_url=(
             "postgresql+psycopg://dev_user:dev_password@127.0.0.1:5432/dev_db"
         ),

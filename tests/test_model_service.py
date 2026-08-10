@@ -2,9 +2,10 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from app.audit_repository import DuplicateRequestIdError
 from app.models import Base
-from app.model_service import call_model_and_save_audit
 from app.model_provider import MockModelProvider, ModelResult
+from app.model_service import call_model_and_save_audit
 
 
 TEST_DATABASE_URL = (
@@ -209,10 +210,50 @@ def test_model_service_uses_injected_provider(
         tenant_id="tenant-demo",
         agent_id="agent-support",
         prompt="请查询订单状态",
-        scenario="success",
         provider=provider,
     )
 
     assert service_result.model_result.status == "success"
     assert service_result.model_result.content == "这是Mock模型的正常回答"
     assert service_result.audit_record.status == "success"
+
+def test_duplicate_request_id_does_not_call_provider(
+    test_session: Session,
+):
+    request_id = "req-duplicate-before-provider"
+
+    call_model_and_save_audit(
+        session=test_session,
+        request_id=request_id,
+        tenant_id="tenant-demo",
+        agent_id="agent-support",
+        prompt="第一次 Mock 请求",
+        scenario="success",
+    )
+
+    class CountingProvider:
+        def __init__(self):
+            self.call_count = 0
+
+        def call(self, prompt: str) -> ModelResult:
+            self.call_count += 1
+
+            return ModelResult(
+                status="success",
+                content="这次调用不应该发生",
+                error_code=None,
+            )
+
+    provider = CountingProvider()
+
+    with pytest.raises(DuplicateRequestIdError):
+        call_model_and_save_audit(
+            session=test_session,
+            request_id=request_id,
+            tenant_id="tenant-demo",
+            agent_id="agent-support",
+            prompt="重复请求",
+            provider=provider,
+        )
+
+    assert provider.call_count == 0
