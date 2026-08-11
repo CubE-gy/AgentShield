@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from uuid import uuid4
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,11 +12,29 @@ from app.main import app
 from app.models import Base
 from app.model_provider import ModelResult, MockModelProvider
 from app.models import AuditRecord
+from app.authentication import ApiKeyRecord
+from app.audit_repository import (
+    get_audit_record,
+    save_audit_record,
+)
+
 
 TEST_DATABASE_URL = (
     "postgresql+psycopg://"
     "agentshield_test:test_password_change_me@127.0.0.1:5433/agentshield_test"
 )
+
+API_KEY_HEADERS = {
+    "X-API-Key": "test-active-key",
+}
+
+TEST_API_KEY_RECORDS = [
+    ApiKeyRecord(
+        value="test-active-key",
+        tenant_id="tenant-alpha",
+        is_active=True,
+    )
+]
 
 @pytest.fixture(autouse=True)
 def use_test_database(monkeypatch):
@@ -33,11 +52,21 @@ def use_test_database(monkeypatch):
         test_session_local,
     )
 
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        SimpleNamespace(
+            model_provider="mock",
+            api_key_records=TEST_API_KEY_RECORDS,
+        ),
+    )
+
     yield
 
     test_engine.dispose()
 
 client = TestClient(app)
+client.headers.update(API_KEY_HEADERS)
 
 def test_health_returns_ok():
     response = client.get("/health")
@@ -163,7 +192,7 @@ def test_model_test_endpoint_calls_model_service(monkeypatch):
         "/model/test",
         json={
             "request_id": "req-api-001",
-            "tenant_id": "tenant-demo",
+            "tenant_id": "tenant-forged",
             "agent_id": "agent-support",
             "prompt": "请查询订单状态",
             "scenario": "success",
@@ -173,7 +202,7 @@ def test_model_test_endpoint_calls_model_service(monkeypatch):
     assert response.status_code == 200
     assert response.json()["status"] == "success"
     assert called["request_id"] == "req-api-001"
-    assert called["tenant_id"] == "tenant-demo"
+    assert called["tenant_id"] == "tenant-alpha"
     assert called["agent_id"] == "agent-support"
     assert called["prompt"] == "请查询订单状态"
     assert called["scenario"] == "success"
@@ -204,6 +233,7 @@ def test_model_call_endpoint_uses_provider_factory(monkeypatch):
 
     class FakeSettings:
         model_provider = "real"
+        api_key_records = TEST_API_KEY_RECORDS
 
     fake_provider = MockModelProvider(scenario="success")
 
@@ -290,6 +320,7 @@ def test_model_call_endpoint_does_not_require_scenario(monkeypatch):
     assert captured["prompt"] == "请查询订单状态"
     assert captured["provider"] is fake_provider
     assert "scenario" not in captured
+    assert captured["tenant_id"] == "tenant-alpha"
 
 def test_model_test_endpoint_never_uses_provider_factory(
     monkeypatch,
@@ -322,3 +353,223 @@ def test_model_test_endpoint_never_uses_provider_factory(
         "content": "这是Mock模型的正常回答",
         "error_code": None,
     }
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/model/test",
+            {
+                "request_id": "req-missing-key-test",
+                "prompt": "测试请求",
+                "scenario": "success",
+            },
+        ),
+        (
+            "/model/call",
+            {
+                "request_id": "req-missing-key-call",
+                "prompt": "测试请求",
+            },
+        ),
+    ],
+)
+def test_model_endpoints_reject_missing_api_key(path, payload):
+    unauthenticated_client = TestClient(app)
+
+    response = unauthenticated_client.post(
+        path,
+        json=payload,
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": {
+            "error_code": "API_KEY_MISSING",
+        }
+    }
+
+
+def test_model_test_endpoint_rejects_unknown_api_key():
+    response = client.post(
+        "/model/test",
+        headers={"X-API-Key": "test-unknown-key"},
+        json={
+            "request_id": "req-unknown-key",
+            "prompt": "测试请求",
+            "scenario": "success",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": {
+            "error_code": "API_KEY_INVALID",
+        }
+    }
+
+
+def test_model_test_endpoint_rejects_disabled_api_key(monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        SimpleNamespace(
+            model_provider="mock",
+            api_key_records=[
+                ApiKeyRecord(
+                    value="test-active-key",
+                    tenant_id="tenant-alpha",
+                    is_active=False,
+                )
+            ],
+        ),
+    )
+
+    response = client.post(
+        "/model/test",
+        json={
+            "request_id": "req-disabled-key",
+            "prompt": "测试请求",
+            "scenario": "success",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "detail": {
+            "error_code": "API_KEY_DISABLED",
+        }
+    }
+
+def create_test_audit_record(
+    request_id: str,
+    tenant_id: str,
+) -> None:
+    session = main_module.SessionLocal()
+
+    try:
+        save_audit_record(
+            session,
+            request_id=request_id,
+            tenant_id=tenant_id,
+            agent_id="agent-support",
+            created_at=datetime(2026, 8, 7, tzinfo=timezone.utc),
+            risk_level="low",
+            status="success",
+            error_code=None,
+            latency_ms=120,
+            summary="model_status=success",
+            summary_hash="a" * 64,
+        )
+    finally:
+        session.close()
+
+
+def test_audit_endpoint_returns_authenticated_tenant_record():
+    create_test_audit_record(
+        request_id="req-audit-alpha",
+        tenant_id="tenant-alpha",
+    )
+
+    response = client.get("/audit/req-audit-alpha")
+
+    assert response.status_code == 200
+    assert response.json()["request_id"] == "req-audit-alpha"
+    assert response.json()["agent_id"] == "agent-support"
+    assert response.json()["status"] == "success"
+    assert response.json()["summary"] == "model_status=success"
+    assert "tenant_id" not in response.json()
+
+
+def test_audit_endpoint_hides_other_tenant_record(monkeypatch):
+    create_test_audit_record(
+        request_id="req-audit-alpha",
+        tenant_id="tenant-alpha",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        SimpleNamespace(
+            model_provider="mock",
+            api_key_records=[
+                ApiKeyRecord(
+                    value="test-active-key",
+                    tenant_id="tenant-alpha",
+                    is_active=True,
+                ),
+                ApiKeyRecord(
+                    value="test-beta-key",
+                    tenant_id="tenant-beta",
+                    is_active=True,
+                ),
+            ],
+        ),
+    )
+
+    response = client.get(
+        "/audit/req-audit-alpha",
+        headers={"X-API-Key": "test-beta-key"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": {
+            "error_code": "AUDIT_RECORD_NOT_FOUND",
+        }
+    }
+
+def test_model_response_and_audit_record_do_not_store_full_api_key(
+    monkeypatch,
+):
+    test_api_key = "test-secret-key-must-not-be-stored"
+
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        SimpleNamespace(
+            model_provider="mock",
+            api_key_records=[
+                ApiKeyRecord(
+                    value=test_api_key,
+                    tenant_id="tenant-alpha",
+                    is_active=True,
+                )
+            ],
+        ),
+    )
+
+    response = client.post(
+        "/model/test",
+        headers={"X-API-Key": test_api_key},
+        json={
+            "request_id": "req-api-key-not-stored",
+            "prompt": "请查询订单状态",
+            "scenario": "success",
+        },
+    )
+
+    assert response.status_code == 200
+    assert test_api_key not in response.text
+
+    session = main_module.SessionLocal()
+
+    try:
+        record = get_audit_record(
+            session,
+            request_id="req-api-key-not-stored",
+        )
+    finally:
+        session.close()
+
+    stored_values = [
+        record.request_id,
+        record.tenant_id,
+        record.agent_id,
+        record.risk_level,
+        record.status,
+        record.error_code or "",
+        record.summary,
+        record.summary_hash,
+    ]
+
+    assert all(test_api_key not in value for value in stored_values)

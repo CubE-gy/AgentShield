@@ -1,6 +1,8 @@
 from pathlib import Path
+import pytest
 
 from app.settings import Settings
+from app.authentication import ApiKeyRecord
 
 def test_settings_reads_database_urls_from_environment(monkeypatch):
     monkeypatch.setenv(
@@ -62,3 +64,58 @@ def test_env_example_contains_safe_model_configuration():
         in env_example
     )
     assert "sk-" not in env_example
+
+def test_settings_reads_api_key_records_from_environment(monkeypatch):
+    monkeypatch.setenv(
+        "AGENTSHIELD_DEV_DATABASE_URL",
+        "postgresql+psycopg://dev_user:dev_password@127.0.0.1:5432/dev_db",
+    )
+    monkeypatch.setenv(
+        "AGENTSHIELD_TEST_DATABASE_URL",
+        "postgresql+psycopg://test_user:test_password@127.0.0.1:5433/test_db",
+    )
+    monkeypatch.setenv(
+        "AGENTSHIELD_API_KEY_RECORDS",
+        (
+            '[{"value": "test-key", "tenant_id": "tenant-alpha", '
+            '"is_active": true}]'
+        ),
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.api_key_records == [
+        ApiKeyRecord(
+            value="test-key",
+            tenant_id="tenant-alpha",
+            is_active=True,
+        )
+    ]
+
+
+def test_settings_rejects_invalid_api_key_configuration(monkeypatch):
+    monkeypatch.setenv(
+        "AGENTSHIELD_DEV_DATABASE_URL",
+        "postgresql+psycopg://dev_user:dev_password@127.0.0.1:5432/dev_db",
+    )
+    monkeypatch.setenv(
+        "AGENTSHIELD_TEST_DATABASE_URL",
+        "postgresql+psycopg://test_user:test_password@127.0.0.1:5433/test_db",
+    )
+    monkeypatch.setenv(
+        "AGENTSHIELD_API_KEY_RECORDS",
+        "not-json",
+    )
+
+    settings = Settings(_env_file=None)
+
+    with pytest.raises(ValueError, match="API Key 配置格式错误"):
+        _ = settings.api_key_records
+
+
+def test_env_example_contains_empty_api_key_records():
+    env_example = Path(".env.example").read_text(
+        encoding="utf-8",
+    )
+
+    assert "AGENTSHIELD_API_KEY_RECORDS=[]" in env_example

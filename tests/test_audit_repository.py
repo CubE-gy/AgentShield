@@ -11,6 +11,7 @@ from app.audit_repository import (
     DatabaseUnavailableError,
     get_audit_record,
     save_audit_record,
+    get_audit_record_for_tenant,
 )
 
 TEST_DATABASE_URL = (
@@ -100,3 +101,35 @@ def test_database_unavailable_is_reported():
 
     with pytest.raises(DatabaseUnavailableError):
         get_audit_record(unavailable_session, "req-001")
+
+def test_get_audit_record_for_tenant_hides_other_tenant_record(
+    test_session: Session,
+):
+    save_audit_record(
+        test_session,
+        request_id="req-tenant-alpha",
+        tenant_id="tenant-alpha",
+        agent_id="agent-support",
+        created_at=datetime(2026, 8, 7, tzinfo=timezone.utc),
+        risk_level="low",
+        status="success",
+        error_code=None,
+        latency_ms=120,
+        summary="model_status=success",
+        summary_hash="d" * 64,
+    )
+
+    found_record = get_audit_record_for_tenant(
+        test_session,
+        request_id="req-tenant-alpha",
+        tenant_id="tenant-alpha",
+    )
+
+    assert found_record.request_id == "req-tenant-alpha"
+
+    with pytest.raises(AuditRecordNotFoundError):
+        get_audit_record_for_tenant(
+            test_session,
+            request_id="req-tenant-alpha",
+            tenant_id="tenant-beta",
+        )

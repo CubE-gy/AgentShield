@@ -6,7 +6,7 @@ AgentShield 是面向企业 Agent/RAG 系统的 LLM 安全网关、模型调用�
 
 ## 当前状态
 
-当前已完成阶段 0～6。阶段 6 完成的内容包括：
+当前已完成阶段 0～7。已完成内容包括：
 
 - Python 项目环境和 FastAPI 健康检查接口；
 - Git 本地版本记录和 GitHub 远程仓库交付；
@@ -21,14 +21,19 @@ AgentShield 是面向企业 Agent/RAG 系统的 LLM 安全网关、模型调用�
 - `/model/test` 强制使用 Mock，不受本机真实 Provider 配置影响；
 - 重复 `request_id` 会在调用 Provider 前被拒绝，避免顺序重试重复产生模型费用；
 - 已使用 APINebula 第三方 OpenAI 兼容服务成功完成一次真实模型调用和安全审计验证。
+- `/model/test`、`/model/call` 和审计查询接口均要求 AgentShield API Key；
+- 缺少、错误或停用的 Key 分别被安全拒绝；
+- 模型调用的租户由认证结果确定，不信任请求体提交的 `tenant_id`；
+- 审计记录只能由所属租户读取，跨租户查询统一返回 `404`；
+- 响应和审计记录不保存完整 API Key。
 
-当前最近一次阶段 6 自动测试记录为：
+当前最近一次阶段 7 自动测试记录为：
 
 ```text
-54 passed
+71 passed
 ```
 
-自动测试只使用 Mock 和假 HTTP，不会访问真实模型或消耗模型费用。真实联网验证使用单独的人工步骤执行。
+自动测试只使用 Mock 和假 HTTP，不会访问真实模型或消耗模型费用。阶段 7 的人工验收已使用 Mock 验证：认证租户可调用并读取自己的审计记录，另一租户读取同一记录得到 `404`。
 
 ## 项目目标
 
@@ -140,14 +145,15 @@ docker exec agentshield-postgres-test pg_isready
 
 ## API 使用示例
 
-阶段6提供两个用途分离的接口：
+模型接口和审计查询接口：
 
 ```text
 POST http://127.0.0.1:8000/model/test
 POST http://127.0.0.1:8000/model/call
+GET  http://127.0.0.1:8000/audit/{request_id}
 ```
 
-`/model/test` 只使用 Mock，请求中需要 `scenario`。`/model/call` 不接收 `scenario`，并通过本机配置选择正式 Provider。
+三个接口都需要 `X-API-Key` 请求头。`/model/test` 只使用 Mock，请求中需要 `scenario`。`/model/call` 不接收 `scenario`，并通过本机配置选择正式 Provider。请求体中的 `tenant_id` 不作为租户依据；服务只使用 API Key 认证得到的租户。
 
 请求示例：
 
@@ -213,10 +219,10 @@ python -m uvicorn app.main:app
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-阶段6当前验证结果：
+阶段7当前验证结果：
 
 ```text
-54 passed
+71 passed
 ```
 
 测试数据库使用端口 `5433`，测试代码不会主动操作开发数据库 `5432`。测试通过只代表已覆盖的场景符合预期，不代表已经完成高并发或完整生产部署。
@@ -266,6 +272,17 @@ python -m uvicorn app.main:app
 - 已使用 APINebula 第三方兼容服务成功执行一次真实模型请求；
 - 真实回答经服务层和正式接口返回，并生成不含完整 Prompt、完整回答或 Key 的审计记录；
 - `/model/test` 已强制使用 Mock，重复 `request_id` 已在 Provider 调用前检查。
+
+### 阶段7：API Key 认证和基础用户隔离
+
+- 从本机 `.env` 的 `AGENTSHIELD_API_KEY_RECORDS` 读取 API Key、租户和启用状态；配置示例保持空列表，不含真实 Key；
+- `/model/test`、`/model/call` 和 `GET /audit/{request_id}` 都要求 `X-API-Key`；
+- 缺少或错误的 Key 返回 `401`，停用的 Key 返回 `403`；
+- 模型调用和审计保存使用认证得到的租户，不使用请求体伪造的 `tenant_id`；
+- 审计查询在数据库中同时按 `request_id` 和认证租户筛选，跨租户和不存在的记录统一返回 `404`；
+- 响应与审计记录不保存完整 Key；当前应用尚未实现日志写入；
+- 自动测试验证了认证、租户覆盖、跨租户隔离和 Key 不进入响应或审计记录；当前自动测试结果：`71 passed`；
+- 已完成人工 Mock 验收：alpha 租户成功调用并读取自己的审计记录，beta 租户查询同一记录得到 `404`。
 
 ## 阶段 6～12 路线图
 
@@ -343,7 +360,7 @@ python -m uvicorn app.main:app
 
 - 官方 OpenAI API 的实际连通性验证；当前只验证了 APINebula 第三方兼容服务；
 - Alembic 数据库迁移、升级和回滚；
-- 用户认证、权限和完整多租户隔离；
+- OAuth、企业单点登录、角色权限和更完整的多租户隔离；
 - Prompt Injection、PII、工具和 SSRF 基础安全检查；
 - 可重复的攻击评测数据集和量化报告；
 - Redis 限流、统一错误和安全日志；

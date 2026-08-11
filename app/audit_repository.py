@@ -49,3 +49,27 @@ def get_audit_record(session: Session, request_id: str) -> AuditRecord:
         )
 
     return record
+
+def get_audit_record_for_tenant(
+    session: Session,
+    request_id: str,
+    tenant_id: str,
+) -> AuditRecord:
+    """只查询指定租户自己的审计记录。"""
+
+    try:
+        record = session.scalar(
+            select(AuditRecord).where(
+                AuditRecord.request_id == request_id,
+                AuditRecord.tenant_id == tenant_id,
+            )
+        )
+    except OperationalError as exc:
+        raise DatabaseUnavailableError("数据库不可用") from exc
+
+    if record is None:
+        raise AuditRecordNotFoundError(
+            f"找不到审计记录：{request_id}"
+        )
+
+    return record
