@@ -22,6 +22,8 @@ class ModelTestRequest(BaseModel):
     agent_id: str = "agent-support"
     prompt: str
     scenario: str
+    tool_name: str | None = None
+    target_url: str | None = None
 
 
 class ModelCallRequest(BaseModel):
@@ -29,6 +31,8 @@ class ModelCallRequest(BaseModel):
     tenant_id: str = "tenant-demo"
     agent_id: str = "agent-support"
     prompt: str
+    tool_name: str | None = None
+    target_url: str | None = None
 
 
 settings = Settings()
@@ -81,6 +85,9 @@ def model_test(
             agent_id=request.agent_id,
             prompt=request.prompt,
             scenario=request.scenario,
+            tool_name=request.tool_name,
+            allowed_tools=getattr(settings, "allowed_tools", ()),
+            target_url=request.target_url,
             provider=provider,
         )
 
@@ -108,6 +115,9 @@ def model_call(
             tenant_id=tenant_id,
             agent_id=request.agent_id,
             prompt=request.prompt,
+            tool_name=request.tool_name,
+            allowed_tools=getattr(settings, "allowed_tools", ()),
+            target_url=request.target_url,
             provider=provider,
         )
 

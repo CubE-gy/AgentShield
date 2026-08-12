@@ -160,12 +160,22 @@ class OpenAIModelProvider:
             error_code=None,
         )
 
-def build_audit_summary(result: ModelResult) -> str:
+def build_audit_summary(
+    result: ModelResult,
+    security_risk_type: str | None = None,
+    security_action: str | None = None,
+) -> str:
     # 这里不读取完整回答，避免敏感内容进入审计摘要
     summary = f"model_status={result.status}"
 
     if result.error_code is not None:
         summary += f";error_code={result.error_code}"
+
+    if security_risk_type is not None:
+        summary += f";security_risk_type={security_risk_type}"
+
+    if security_action is not None:
+        summary += f";security_action={security_action}"
 
     return summary
 
@@ -175,8 +185,15 @@ def build_audit_record_data(
     agent_id: str,
     result: ModelResult,
     latency_ms: int,
+    risk_level: str = "low",
+    security_risk_type: str | None = None,
+    security_action: str | None = None,
 ) -> dict:
-    summary = build_audit_summary(result)
+    summary = build_audit_summary(
+        result,
+        security_risk_type=security_risk_type,
+        security_action=security_action,
+    )
     summary_hash = hashlib.sha256(summary.encode("utf-8")).hexdigest()
 
     return {
@@ -184,7 +201,7 @@ def build_audit_record_data(
         "tenant_id": tenant_id,
         "agent_id": agent_id,
         "created_at": datetime.now(timezone.utc),
-        "risk_level": "low",
+        "risk_level": risk_level,
         "status": result.status,
         "error_code": result.error_code,
         "latency_ms": latency_ms,

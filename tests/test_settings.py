@@ -119,3 +119,30 @@ def test_env_example_contains_empty_api_key_records():
     )
 
     assert "AGENTSHIELD_API_KEY_RECORDS=[]" in env_example
+
+
+def test_settings_reads_tool_allowlist_from_environment(monkeypatch):
+    monkeypatch.setenv(
+        "AGENTSHIELD_DEV_DATABASE_URL",
+        "postgresql+psycopg://dev_user:dev_password@127.0.0.1:5432/dev_db",
+    )
+    monkeypatch.setenv(
+        "AGENTSHIELD_TEST_DATABASE_URL",
+        "postgresql+psycopg://test_user:test_password@127.0.0.1:5433/test_db",
+    )
+    monkeypatch.setenv(
+        "AGENTSHIELD_ALLOWED_TOOLS",
+        '["order_lookup"]',
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.allowed_tools == ("order_lookup",)
+
+
+def test_env_example_contains_empty_tool_allowlist():
+    env_example = Path(".env.example").read_text(
+        encoding="utf-8",
+    )
+
+    assert "AGENTSHIELD_ALLOWED_TOOLS=[]" in env_example

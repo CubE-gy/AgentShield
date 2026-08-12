@@ -58,6 +58,7 @@ def use_test_database(monkeypatch):
         SimpleNamespace(
             model_provider="mock",
             api_key_records=TEST_API_KEY_RECORDS,
+            allowed_tools=(),
         ),
     )
 
