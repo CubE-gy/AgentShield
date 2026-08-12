@@ -1,128 +1,94 @@
 # AgentShield
 
-AgentShield 是面向企业 Agent/RAG 系统的 LLM 安全网关、模型调用评测与请求审计平台。
+AgentShield 是一个面向 Agent/RAG 系统的 LLM 安全网关学习项目。它在请求进入模型前完成身份认证和基础安全检查，在调用后保存不含完整 Prompt、回答和密钥的审计记录。
 
-项目重点不是只调用模型，而是验证模型调用过程中的安全边界：请求是否成功、模型是否拒绝、服务是否失败或超时，以及这些结果能否被安全地记录和追踪。
+当前版本用于学习、面试展示和本地验证，不应直接作为完整企业安全产品使用。
 
-## 当前状态
+技术栈：Python、FastAPI、PostgreSQL、SQLAlchemy、Docker Compose、pytest。
 
-当前已完成阶段 0～7。已完成内容包括：
+## 当前能力
 
-- Python 项目环境和 FastAPI 健康检查接口；
-- Git 本地版本记录和 GitHub 远程仓库交付；
-- Docker Compose 管理的 PostgreSQL 开发库和测试库；
-- 请求审计记录的保存、读取和基础错误处理；
-- 可替换的模型调用结构和 Mock 模型（只用于测试的模拟模型服务）；
-- 统一的 `ModelProvider` 协议、Provider 注入和 Provider 工厂；
-- `OpenAIModelProvider` 真实 Provider 骨架、默认 HTTP 调用函数和假 HTTP 测试替身；
-- 模型正常、拒绝、失败、超时、格式错误和未知场景的测试；
-- 审计摘要不保存完整 Prompt 或完整模型回答；
-- Mock 专用的 `/model/test` 与正式 `/model/call` 接口已分离；
-- `/model/test` 强制使用 Mock，不受本机真实 Provider 配置影响；
-- 重复 `request_id` 会在调用 Provider 前被拒绝，避免顺序重试重复产生模型费用；
-- 已使用 APINebula 第三方 OpenAI 兼容服务成功完成一次真实模型调用和安全审计验证。
-- `/model/test`、`/model/call` 和审计查询接口均要求 AgentShield API Key；
-- 缺少、错误或停用的 Key 分别被安全拒绝；
-- 模型调用的租户由认证结果确定，不信任请求体提交的 `tenant_id`；
-- 审计记录只能由所属租户读取，跨租户查询统一返回 `404`；
-- 响应和审计记录不保存完整 API Key。
+- 使用 AgentShield API Key 认证请求，并由认证结果确定租户；
+- 不同租户不能读取彼此的审计记录；
+- `/model/test` 使用 Mock（不访问真实模型的测试替代服务）；
+- `/model/call` 通过 Provider（统一不同模型调用方式的适配层）访问配置的模型服务；
+- 重复 `request_id` 在模型调用前被拒绝，避免顺序重试重复产生费用；
+- 在模型调用前执行 Prompt Injection、PII、工具允许名单和 URL/SSRF 基础检查；
+- 邮箱和中国大陆手机号脱敏后再发送给模型；
+- 将模型状态、安全风险和处理动作写入 PostgreSQL 审计记录；
+- 使用 50 条固定样例离线统计安全规则的误报、漏报、脱敏错误和耗时。
 
-阶段 8 正在进行中。已完成的第一个小功能：
-
-- 对明显要求覆盖既有指令的 Prompt Injection（通过恶意提示词诱导模型忽略安全规则）请求进行基础检查；
-- 高风险请求在调用模型前被阻止，返回 `blocked` 和 `PROMPT_INJECTION_DETECTED`；
-- 审计记录保存风险等级和 `security_risk_type=prompt_injection`，不保存原始提示词。
-- 请求中的邮箱和中国大陆手机号会在调用模型前替换为固定占位符；审计记录标记 `security_risk_type=pii` 和 `security_action=masked`，不保存原始敏感值。
-- 请求中的工具名称必须在本机 `AGENTSHIELD_ALLOWED_TOOLS` 允许名单内；未允许的工具会在模型调用前被阻止，并写入不含原始提示词的审计摘要。
-- 请求提供目标 URL 时，会阻止本机、内网、链路本地和云元数据地址，以及非 HTTP(S) 协议；被阻止的请求不会调用模型。
-- 四类安全检查共用内部 `SecurityCheckInput` 输入格式，统一携带提示词、工具名称、目标 URL 和本机允许名单；这不改变对外 API 请求格式。
-
-当前最近一次阶段 7 自动测试记录为：
+## 核心流程
 
 ```text
-71 passed
+HTTP 请求
+→ API Key 认证并确定租户
+→ 创建数据库 Session 和 Provider
+→ 检查重复 request_id
+→ Prompt Injection 检查
+→ 工具允许名单检查
+→ URL/SSRF 检查
+→ PII 脱敏
+→ provider.call(prompt)
+→ 生成脱敏审计记录
+→ PostgreSQL
 ```
 
-自动测试只使用 Mock 和假 HTTP，不会访问真实模型或消耗模型费用。阶段 7 的人工验收已使用 Mock 验证：认证租户可调用并读取自己的审计记录，另一租户读取同一记录得到 `404`。
-
-## 项目目标
-
-- 统一接收 Agent 或模型调用请求；
-- 对模型调用结果进行成功、拒绝、失败和超时分类；
-- 对请求进行脱敏审计（去掉密码、API Key 等敏感内容后记录）；
-- 为后续 Prompt Injection（提示词注入攻击）、RAG 越权和工具调用安全评测提供基础；
-- 在不泄露完整 Prompt 的前提下支持问题排查和安全追踪。
-
-## 技术栈与选型
-
-- Python：主要开发语言。
-- FastAPI：提供 HTTP 接口。
-- PostgreSQL：保存审计记录，适合多人和多个请求同时访问；SQLite 只作为单机学习或临时测试方案。
-- Docker Compose：通过配置文件启动和管理开发数据库、测试数据库。
-- SQLAlchemy：使用 Python 定义数据表并执行数据库操作。
-- psycopg：连接 PostgreSQL 的 Python 驱动。
-- pydantic-settings：从 `.env` 读取应用配置。
-- pytest：运行自动化测试。
-- Git/GitHub：记录代码版本并进行远程交付。
+前三类安全检查命中高风险时，不执行 `provider.call()`。PII 命中时替换敏感字段并继续调用。当前采用短路处理，因此一条请求只记录首先命中的阻止风险。
 
 ## 项目目录
 
 ```text
-app/                应用代码
-tests/              自动化测试
-evals/              安全评测样例目录
-compose.yaml        PostgreSQL 开发库和测试库配置
-requirements.txt    Python 依赖清单
-.env.example        环境变量模板
-.gitignore          Git 忽略规则
-README.md           项目说明
-AGENTS.md           Codex 协作和教学规则
+app/                    FastAPI、认证、模型调用、安全检查和审计代码
+tests/                  自动测试
+evals/                  离线安全评测样例、运行脚本和报告
+evals/reports/          可重复的基准评测报告
+evals/analysis.md       失败样例分析
+compose.yaml            PostgreSQL 开发库和测试库
+.env.example            不含真实密钥的配置示例
+requirements.txt        Python 依赖
+AGENTS.md               Codex 开发与教学规则
 ```
 
-## 环境要求
+## 快速启动
 
-- Windows、macOS 或 Linux；
-- Python 3.11 或更高版本；
-- Docker Desktop（Windows 上需要 WSL 2 支持）；
-- Git。
+环境要求：Python 3.11+、Git、Docker Desktop。
 
-## 环境配置
+### 1. 创建 Python 独立环境并安装依赖
 
-在项目根目录创建本机配置文件：
+在项目根目录执行：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### 2. 创建本机配置
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-`.env` 不得提交到 GitHub。当前 Compose 配置需要以下变量：
+`.env` 必须保留在本机，不能提交到 Git。至少需要配置开发库、测试库、Compose 数据库账号和一条启用的 AgentShield API Key：
 
 ```dotenv
-AGENTSHIELD_DEV_DATABASE_URL=postgresql+psycopg://agentshield:修改为本机开发密码@127.0.0.1:5432/agentshield_dev
-AGENTSHIELD_TEST_DATABASE_URL=postgresql+psycopg://agentshield_test:修改为本机测试密码@127.0.0.1:5433/agentshield_test
-AGENTSHIELD_DEV_DB_USER=agentshield
-AGENTSHIELD_DEV_DB_PASSWORD=修改为本机开发密码
+AGENTSHIELD_DEV_DATABASE_URL=postgresql+psycopg://本机开发用户:本机开发密码@127.0.0.1:5432/agentshield_dev
+AGENTSHIELD_TEST_DATABASE_URL=postgresql+psycopg://本机测试用户:本机测试密码@127.0.0.1:5433/agentshield_test
+
+AGENTSHIELD_DEV_DB_USER=本机开发用户
+AGENTSHIELD_DEV_DB_PASSWORD=本机开发密码
 AGENTSHIELD_DEV_DB_NAME=agentshield_dev
-AGENTSHIELD_TEST_DB_USER=agentshield_test
-AGENTSHIELD_TEST_DB_PASSWORD=修改为本机测试密码
+AGENTSHIELD_TEST_DB_USER=本机测试用户
+AGENTSHIELD_TEST_DB_PASSWORD=本机测试密码
 AGENTSHIELD_TEST_DB_NAME=agentshield_test
+
+AGENTSHIELD_API_KEY_RECORDS=[{"value":"替换为本机测试Key","tenant_id":"tenant-demo","is_active":true}]
+AGENTSHIELD_ALLOWED_TOOLS=[]
 ```
 
-上面的密码只是占位说明，不能直接作为生产密码使用。真实配置放在本机 `.env`、生产秘密管理系统或部署平台环境变量中。
+默认保持 `AGENTSHIELD_MODEL_PROVIDER=mock`，避免意外联网和产生费用。真实模型密钥只能填写在本机 `.env`。
 
-阶段 6 模型配置名称如下：
-
-```dotenv
-AGENTSHIELD_MODEL_PROVIDER=mock
-AGENTSHIELD_MODEL_API_KEY=
-AGENTSHIELD_MODEL_NAME=gpt-5.6-terra
-AGENTSHIELD_MODEL_BASE_URL=https://api.openai.com/v1
-```
-
-`.env.example` 默认使用 Mock，避免意外联网或产生费用。人工验证第三方兼容服务时，只在本机 `.env` 中设置 `real`、实际模型名称、服务地址和该服务签发的 Key。不得把一家服务的 Key 交给另一家服务。
-
-## 启动 PostgreSQL
-
-在项目根目录执行：
+### 3. 启动 PostgreSQL
 
 ```powershell
 docker compose config --quiet
@@ -130,302 +96,131 @@ docker compose up -d
 docker compose ps
 ```
 
-开发库：电脑端口 `5432` → 容器内 PostgreSQL 端口 `5432`；测试库：电脑端口 `5433` → 容器内 PostgreSQL 端口 `5432`。
+开发库使用端口 `5432`，测试库使用端口 `5433`。
 
-容器显示 `Running` 或 `Up` 只代表容器进程正在运行。确认数据库已准备好，可执行：
-
-```powershell
-docker exec agentshield-postgres-dev pg_isready
-docker exec agentshield-postgres-test pg_isready
-```
-
-看到 `accepting connections` 才表示数据库已准备好接受连接。
-
-## 启动 FastAPI
+### 4. 启动 FastAPI
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
-访问 `GET http://127.0.0.1:8000/health`，预期返回：
-
-```json
-{"status": "ok"}
-```
-
-## API 使用示例
-
-模型接口和审计查询接口：
+打开 `http://127.0.0.1:8000/docs` 使用 Swagger 页面，或访问健康检查：
 
 ```text
-POST http://127.0.0.1:8000/model/test
-POST http://127.0.0.1:8000/model/call
-GET  http://127.0.0.1:8000/audit/{request_id}
+GET http://127.0.0.1:8000/health
 ```
 
-三个接口都需要 `X-API-Key` 请求头。`/model/test` 只使用 Mock，请求中需要 `scenario`。`/model/call` 不接收 `scenario`，并通过本机配置选择正式 Provider。请求体中的 `tenant_id` 不作为租户依据；服务只使用 API Key 认证得到的租户。
+预期结果：
 
-请求示例：
+```json
+{"status":"ok"}
+```
+
+## 核心接口
+
+| 接口 | 用途 |
+|---|---|
+| `POST /model/test` | 固定使用 Mock，适合日常测试和人工演示 |
+| `POST /model/call` | 使用本机配置的正式 Provider，可能访问外部模型并产生费用 |
+| `GET /audit/{request_id}` | 查询当前认证租户自己的审计记录 |
+
+三个接口都需要在请求头填写 `X-API-Key`。请求体中的 `tenant_id` 不作为租户依据。
+
+`/model/test` 最小请求示例：
 
 ```json
 {
   "request_id": "req-demo-001",
-  "tenant_id": "tenant-demo",
-  "agent_id": "agent-support",
   "prompt": "请查询订单状态",
   "scenario": "success"
 }
 ```
 
-支持场景：
+Mock 支持 `success`、`reject`、`failure`、`timeout` 和 `malformed` 场景。`tool_name` 与 `target_url` 是可选字段，只在对应安全检查中填写。
 
-| 场景 | 模拟结果 | 错误码 |
-|---|---|---|
-| `success` | 正常回答 | 无 |
-| `reject` | 模型拒绝请求 | `MODEL_REFUSED` |
-| `failure` | 模型服务不可用 | `MODEL_UNAVAILABLE` |
-| `timeout` | 模型调用超时 | `MODEL_TIMEOUT` |
-| `malformed` | 模型返回格式错误 | `MODEL_INVALID_RESPONSE` |
-| 其他值 | 无效场景 | `MODEL_INVALID_SCENARIO` |
+真实模型人工验证必须使用新的 `request_id` 和不含敏感信息的短 Prompt。项目曾使用 APINebula 的 OpenAI 兼容服务完成一次真实调用；这不代表已经验证所有模型服务商。
 
-两个接口都返回模型状态、回答内容和错误码，并把不含完整 Prompt 或完整回答的审计摘要保存到 PostgreSQL。
+## 验证项目
 
-### 真实模型人工验证
-
-以下操作会访问外部服务并可能产生费用，不得放入日常自动测试。
-
-1. 在本机 `.env` 中填写兼容服务的真实配置，不要把 Key 写入命令、截图、README 或 Git。
-2. 启动开发数据库，并使用 `pg_isready` 确认显示 `accepting connections`。
-3. 启动 FastAPI：
-
-```powershell
-python -m uvicorn app.main:app
-```
-
-4. 打开 `http://127.0.0.1:8000/docs`，只对 `/model/call` 使用全新的 `request_id` 执行一次无敏感信息的短请求。
-5. 确认响应为 HTTP `200`、`status=success`、`error_code=null`。
-6. 查询同一 `request_id` 的审计记录，确认 `summary=model_status=success`、摘要哈希长度为 `64`，且没有完整 Prompt、完整回答或 Key。
-7. 验证后使用 `Ctrl+C` 停止 FastAPI，防止误操作重复调用。
-
-2026-08-10 已使用 APINebula 第三方 OpenAI 兼容服务进行一次人工验证：
-
-- 模型：`gpt-5.6-terra`；
-- 请求编号：`req-apinebula-real-003`；
-- 接口响应：HTTP `200`、`status=success`、`error_code=null`；
-- 审计记录：`status=success`、`summary=model_status=success`、`summary_hash` 长度 `64`；
-- 服务层记录的调用耗时：`5856 ms`；
-- 安全检查：响应、审计摘要和 Git 状态未显示完整 Key；`.env` 仍被 Git 忽略。
-
-本次人工验证前如实记录了两个失败现象：
-
-- 令牌使用不匹配的用户分组时，第三方服务返回 HTTP `503`，AgentShield 保存了 `MODEL_API_HTTP_503` 失败审计；
-- 调整为可用的 Codex 分组后，重复使用已存在的 `request_id` 导致模型调用后审计保存失败并返回本地 HTTP `500`。已增加服务层前置重复检查，避免顺序重试再次调用 Provider。
-
-## 运行测试
-
-启动测试数据库后，在项目根目录执行：
+### 自动测试
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-阶段7当前验证结果：
+自动测试使用 Mock、假 HTTP 和独立测试数据库，不主动调用真实模型。
 
-```text
-71 passed
-```
-
-测试数据库使用端口 `5433`，测试代码不会主动操作开发数据库 `5432`。测试通过只代表已覆盖的场景符合预期，不代表已经完成高并发或完整生产部署。
-
-## 阶段 9：安全评测
-
-在项目根目录执行以下命令。程序会先校验样例结构，再使用固定 DNS 映射离线执行安全检查并生成报告：
+### 离线安全评测
 
 ```powershell
 .\.venv\Scripts\python.exe evals\run_security_evals.py
 ```
 
-当前评测集有 50 条样例，覆盖 Prompt Injection、PII、工具允许名单、SSRF 和正常业务请求；不会调用真实模型、数据库、外网或真实 DNS。报告统计正确率、误报、漏报、脱敏错误、P95 耗时（95% 样例耗时不超过的值）和分类结果。
+pytest 用于检查已有代码行为是否被改坏；安全评测用于衡量阶段 8 规则在固定样例中的误报和漏报。两者不能用同一个“测试数量”描述。
 
-- `evals/reports/baseline-50-cases.json`：基础规则的首次基准结果；
-- `evals/reports/repeat-50-cases.json`：相同代码、样例和固定 DNS 下的重复运行结果；两份报告核心判断均为 44/50 通过，包含 1 个误报、4 个漏报和 1 个脱敏错误；
-- `evals/analysis.md`：6 条真实失败样例的原因、风险与暂不修复理由。
+当前评测集包含 50 条样例，使用固定 DNS 映射，不访问真实模型、数据库、外网或真实 DNS。基准结果为：
 
-44/50 只描述这 50 条固定样例，不能代表完整安全防护能力；当前规则限制会一同写入 JSON 报告。
+```text
+44/50 通过
+误报 1 条
+漏报 4 条
+脱敏错误 1 条
+```
 
-## 阶段进度
+详细结果见 `evals/reports/`，失败原因见 `evals/analysis.md`。该结果只代表这 50 条固定样例，不能证明系统具备完整安全防护能力。
 
-### 阶段4：Git 与 GitHub 项目交付
+## 安全边界与已知限制
 
-- 使用 Git 保存项目版本；
-- 创建 GitHub 私有仓库并配置远程地址；
-- 完成本地提交和 GitHub 推送；
-- 使用 `.gitignore` 排除 `.env`、`.venv/`、Python 缓存和 IDE 配置；
-- 验证本地最新提交与远程分支同步；
-- 未上传 `.env`、真实密码、真实 API Key 或缓存目录。
+已经采取的保护：
 
-### 阶段5：PostgreSQL 请求审计记录
+- `.env`、真实密码和真实密钥不进入 Git；
+- 响应和审计记录不保存完整 AgentShield API Key；
+- 审计摘要不保存完整 Prompt 和完整模型回答；
+- 模型调用前执行认证、重复请求检查和基础安全检查；
+- 安全评测不使用真实个人信息或不受控外部网络。
 
-- 选择 PostgreSQL 作为正式数据库，未接入 SQLite；
-- 使用 Docker Compose 创建独立开发库和测试库；
-- 使用不同端口和数据卷隔离两套数据库；
-- 使用 SQLAlchemy 和 psycopg 保存、读取审计记录；
-- 对 `request_id` 设置唯一约束，重复编号会被拒绝；
-- 处理记录不存在和数据库不可用等基础错误；
-- 保存请求编号、租户、Agent、时间、状态、错误码、耗时、脱敏摘要和摘要哈希；
-- 阶段5验证结果：`7 passed`；
-- 当前表结构仍使用 `Base.metadata.create_all()`，尚未使用 Alembic（数据库表结构版本管理工具）。
+当前限制：
 
-### 阶段6：Mock 与真实模型调用闭环
+- Prompt Injection 使用有限的可解释规则，仍会误报和漏报；
+- PII 只处理格式明确的邮箱和中国大陆手机号；
+- 工具检查只验证名称，项目尚未执行真实工具；
+- SSRF 预检查不能单独解决 DNS 重绑定和重定向，真实访问时仍需复检最终地址；
+- API Key 使用本机静态配置，尚无哈希密钥库、自动轮换和复杂权限系统；
+- 当前只验证过一家第三方 OpenAI 兼容服务；
+- 尚未完成 Redis 限流、Alembic 数据库迁移、压力测试、部署和监控。
 
-- 建立模型服务调用和 Mock Provider（模型服务适配层）结构；
-- 模拟正常返回、拒绝、服务失败、超时和格式错误；
-- 未知场景返回 `MODEL_INVALID_SCENARIO`；
-- FastAPI 的 `/model/test` 调用服务层，不在路由中写死回答；
-- 模型结果和脱敏审计摘要一起保存到 PostgreSQL；
-- 测试验证 Prompt 和完整模型回答不会进入审计摘要；
-- 定义统一的 `ModelProvider` 协议：`call(prompt) -> ModelResult`；
-- Mock 场景保存在 `MockModelProvider` 创建参数中，不进入通用 Provider 调用签名；
-- 服务函数支持从外部注入 Provider；
-- 增加 `OpenAIModelProvider` 骨架；
-- 真实 Provider 支持默认 HTTP 调用函数和可注入的测试替身；
-- 配置 `AGENTSHIELD_MODEL_PROVIDER=mock` 时使用 Mock；
-- 配置 `AGENTSHIELD_MODEL_PROVIDER=real` 时选择真实 Provider；
-- 没有 API Key 时返回 `MODEL_API_KEY_MISSING`，不会发送网络请求；
-- 假 HTTP 测试已覆盖正常响应、连接失败、超时、HTTP 错误和格式错误；
-- 当前自动测试记录：`54 passed`；
-- 日常自动测试不读取本机真实 Provider 配置、不访问网络且不消耗模型费用；
-- 已使用 APINebula 第三方兼容服务成功执行一次真实模型请求；
-- 真实回答经服务层和正式接口返回，并生成不含完整 Prompt、完整回答或 Key 的审计记录；
-- `/model/test` 已强制使用 Mock，重复 `request_id` 已在 Provider 调用前检查。
+## 阶段状态
 
-### 阶段7：API Key 认证和基础用户隔离
+| 阶段 | 状态 | 核心成果 |
+|---|---|---|
+| 0～4 | 已完成 | 环境、FastAPI、Git 和 GitHub 交付 |
+| 5 | 已完成 | PostgreSQL 审计记录 |
+| 6 | 已完成 | Mock 与真实模型调用闭环 |
+| 7 | 已完成 | API Key 认证和租户隔离 |
+| 8 | 已完成 | Prompt、PII、工具和 SSRF 基础检查 |
+| 9 | 已完成 | 50 条离线安全评测、量化报告和失败分析 |
+| 10 | 未开始 | Redis 限流、日志和统一错误处理 |
+| 11 | 未开始 | Docker 完整启动、数据库迁移和压力测试 |
+| 12 | 未开始 | 看板、部署、文档和求职材料 |
 
-- 从本机 `.env` 的 `AGENTSHIELD_API_KEY_RECORDS` 读取 API Key、租户和启用状态；配置示例保持空列表，不含真实 Key；
-- `/model/test`、`/model/call` 和 `GET /audit/{request_id}` 都要求 `X-API-Key`；
-- 缺少或错误的 Key 返回 `401`，停用的 Key 返回 `403`；
-- 模型调用和审计保存使用认证得到的租户，不使用请求体伪造的 `tenant_id`；
-- 审计查询在数据库中同时按 `request_id` 和认证租户筛选，跨租户和不存在的记录统一返回 `404`；
-- 响应与审计记录不保存完整 Key；当前应用尚未实现日志写入；
-- 自动测试验证了认证、租户覆盖、跨租户隔离和 Key 不进入响应或审计记录；当前自动测试结果：`71 passed`；
-- 已完成人工 Mock 验收：alpha 租户成功调用并读取自己的审计记录，beta 租户查询同一记录得到 `404`。
+完整阶段目标和开发规则以 `AGENTS.md` 为准，README 不重复保存开发过程。
 
-## 阶段 6～12 路线图
+## README 更新规则
 
-### 阶段6：Mock 与真实模型调用闭环
+一个功能只在一个位置详细说明；阶段结束时覆盖当前状态，不追加旧历史。只保留最近一次有效的测试或评测结果。
 
-- 保留可重复、无费用的 Mock 自动测试；
-- 从本机 `.env` 读取真实模型配置，真实密钥不进入代码和 Git；
-- 成功完成一次真实模型请求；
-- 验证真实回答经过服务层返回并生成脱敏审计记录；
-- 将 Mock 专用场景与正式模型接口分离；
-- 日常自动测试不访问真实模型、不消耗模型费用。
-
-### 阶段7：API Key 认证和基础用户隔离
-
-- 请求必须携带 AgentShield API Key；
-- 缺少、错误或停用的 Key 被拒绝；
-- 从认证结果确定租户；
-- 不同租户不能读取彼此的审计记录；
-- 响应、日志和数据库不保存完整 Key。
-
-### 阶段8：Prompt、PII、工具和 SSRF 安全检查
-
-- 按 Prompt Injection、PII、工具允许名单、URL/SSRF 的顺序逐个实现；
-- 使用统一的安全检查输入、风险类型、风险等级和处理结果；
-- 高风险请求在调用模型或工具前被阻止；
-- 检测结果和阻止原因进入审计记录；
-- 记录规则的误报、漏报和已知限制；
-- 不把简单关键词匹配描述成完整安全方案。
-
-#### 已实现：Prompt Injection 基础检查
-
-- 当前规则识别中英文的“忽略此前指令/规则”类直接覆盖指令；带有明确教学语境、且讨论提示注入攻击的文本会放行；
-- 规则只覆盖少量可解释的模式，仍可能漏掉改写、分段、编码或间接攻击；教学语境判断也可能造成误报或漏报；
-- 这是模型调用前的基础拦截，不替代提示词隔离、权限控制、人工复核或后续评测。
-
-#### 已实现：PII 基础脱敏
-
-- 当前仅脱敏格式明确的邮箱和中国大陆手机号，分别替换为 `[MASKED_EMAIL]` 与 `[MASKED_PHONE]` 后才发送给模型；
-- 为避免产品编号被误处理，夹在英文字母、数字或下划线中的 11 位数字不会被当作手机号；
-- 不检查身份证、地址、姓名、海外号码或上下文关联信息，格式不规范、编码或拆分后的敏感信息仍可能漏掉。
-
-#### 已实现：工具允许名单基础检查
-
-- 本机 `.env` 使用 JSON 数组配置 `AGENTSHIELD_ALLOWED_TOOLS`，例如 `["order_lookup"]`；默认空数组，表示不允许请求任何工具；
-- 请求体中的 `tool_name` 只表示希望使用的工具，是否允许完全由本机配置决定；未允许的名称会返回 `TOOL_NOT_ALLOWED`，且不会继续调用模型；
-- 当前项目尚未接入或执行真实工具。本检查只限制工具名称，后续仍需为每个工具增加参数检查、权限控制和实际调用边界。
-
-#### 已实现：URL/SSRF 基础检查
-
-- `target_url` 仅允许使用 `http` 或 `https` 协议；`localhost`、`.local` 域名、常见云元数据域名，以及本机、内网、链路本地、保留和未指定 IP 地址都会被阻止；十进制或十六进制的 IPv4 特殊写法也会先转换后检查；
-- 普通域名会先解析为 IP 地址，任一解析结果为禁止地址就阻止；无法解析的域名会安全拒绝，并返回 `URL_HOST_RESOLUTION_FAILED`；
-- URL 被阻止时返回 `SSRF_TARGET_BLOCKED`（不允许的协议返回 `URL_SCHEME_NOT_ALLOWED`），并在调用模型前结束处理。DNS 重绑定和重定向仍可能在检查后改变最终地址，因此真实网络请求处必须再次解析并检查最终目标地址。
-
-### 阶段9：攻击评测系统和量化结果
-
-- 已建立 50 条结构统一、具有唯一编号的安全样例；正常样例占 44%；
-- 评测命令会先校验样例字段、标签、类别覆盖和固定 DNS 映射，再批量运行；
-- 报告按总体和分类统计正确率、误报、漏报、脱敏错误、运行异常、平均与 P95 耗时；
-- 使用进程内固定 DNS 映射，不访问真实 DNS、模型、数据库或外网；
-- 保存 baseline 与 repeat 报告，重复运行的核心判断和失败类型一致；
-- 已分析 6 条真实失败样例，未通过删除样例或修改预期答案隐藏失败。
-
-### 阶段10：Redis 限流、日志和统一错误处理
-
-- 按 API Key 或租户限制单位时间请求数量；
-- 不同租户分别计数；
-- 统一错误格式和请求追踪编号；
-- 明确 Redis 不可用时的行为；
-- 日志不记录完整 Key、完整 Prompt 和数据库密码。
-
-### 阶段11：Docker、数据库迁移和压力测试
-
-- 使用 Docker Compose 启动 FastAPI、PostgreSQL 和 Redis；
-- 使用 Alembic 管理数据库表结构升级和回滚；
-- 在干净环境中重复验证启动步骤；
-- 执行一次固定参数、可重复的基础压力测试；
-- 如实记录延迟、吞吐量、错误和实际发现的性能问题。
-
-### 阶段12：看板、部署、文档和求职材料
-
-- 使用简单看板展示风险和审计数据；
-- 准备三分钟项目演示；
-- 完善 README、架构图、设计取舍和已知限制；
-- 部署可演示版本，或者提供经过验证的本地演示；
-- 完成密钥检查、简历项目描述和面试问题整理。
-
-## 安全边界
-
-- 真实模型 API Key 只允许保存在本机 `.env`、部署平台环境变量或秘密管理系统；
-- 不在源代码、测试、命令、截图、日志或文档中写数据库密码或真实密钥；
-- `.env` 不提交到 GitHub；
-- 不把完整 Prompt 或完整模型回答写入审计摘要；
-- 测试数据库与开发数据库分开；
-- 错误信息不应返回数据库密码、连接字符串或其他敏感配置；
-- 未经授权不得对外扫描、攻击或访问第三方系统。
-
-## 当前限制与后续计划
-
-当前项目是经过测试、可追踪交付的最小实现，不应直接包装成完整生产系统。尚未完成：
-
-- 官方 OpenAI API 的实际连通性验证；当前只验证了 APINebula 第三方兼容服务；
-- Alembic 数据库迁移、升级和回滚；
-- OAuth、企业单点登录、角色权限和更完整的多租户隔离；
-- Prompt Injection、PII、工具和 SSRF 基础安全检查；
-- Redis 限流、统一错误和安全日志；
-- 高并发压测、连接池调优和故障恢复；
-- 监控、告警、数据库备份和灾难恢复；
-- 看板、部署验证和求职演示材料。
-
-## 开发约定
-
-- 先明确功能规则，再编写测试，再实现最少代码；
-- 每次只修改一个小功能，修改后先运行相关测试，再运行全部测试；
-- 测试数量不是进度指标；测试必须对应明确行为、安全边界或已经发生的错误；
-- 相同场景不在 Provider、服务和接口三层机械重复，优先合并结构相同的测试；
-- 日常自动测试不访问真实模型、不消耗模型费用，真实联网验证单独执行并记录；
-- 测试失败时先阅读完整错误并判断原因，不直接重写大量代码；
-- README 只描述已经实际验证的内容；
-- 未经确认不执行 `git add`、`git commit` 或 `git push`；
-- 任何提交前都要检查敏感文件、差异和测试结果。
+| 阶段 | 需要检查并更新的 README 模块 |
+|---|---|
+| 0 | 环境要求（仅在要求变化时） |
+| 1 | 项目目录、快速启动、依赖 |
+| 2 | 当前能力、核心流程、接口 |
+| 3 | 通常不更新 |
+| 4 | 阶段状态 |
+| 5 | 当前能力、核心流程、目录、启动、安全边界 |
+| 6 | 当前能力、流程、接口、模型配置和限制 |
+| 7 | 当前能力、认证说明、安全边界、阶段状态 |
+| 8 | 当前能力、安全流程、安全边界、阶段状态 |
+| 9 | 验证项目、评测结果、安全限制、阶段状态 |
+| 10 | 快速启动、限流与错误行为、安全边界、阶段状态 |
+| 11 | 环境要求、快速启动、目录、验证方式和性能限制 |
+| 12 | 项目简介、最终架构、部署、演示和最终能力边界 |
