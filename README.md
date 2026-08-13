@@ -4,7 +4,7 @@ AgentShield 是一个面向 Agent/RAG 系统的 LLM 安全网关学习项目。�
 
 当前版本用于学习、面试展示和本地验证，不应直接作为完整企业安全产品使用。
 
-技术栈：Python、FastAPI、PostgreSQL、SQLAlchemy、Docker Compose、pytest。
+技术栈：Python、FastAPI、PostgreSQL、Redis、SQLAlchemy、Docker Compose、pytest。
 
 ## 当前能力
 
@@ -16,6 +16,9 @@ AgentShield 是一个面向 Agent/RAG 系统的 LLM 安全网关学习项目。�
 - 在模型调用前执行 Prompt Injection、PII、工具允许名单和 URL/SSRF 基础检查；
 - 邮箱和中国大陆手机号脱敏后再发送给模型；
 - 将模型状态、安全风险和处理动作写入 PostgreSQL 审计记录；
+- 按认证后的租户使用 Redis 限流，默认每 60 秒最多 60 次模型请求；
+- 为每个请求返回追踪编号，并记录不含 API Key、Prompt 和模型回答的安全日志；
+- 统一返回安全错误格式，明确请求是否可重试；
 - 使用 50 条固定样例离线统计安全规则的误报、漏报、脱敏错误和耗时。
 
 ## 核心流程
@@ -23,6 +26,7 @@ AgentShield 是一个面向 Agent/RAG 系统的 LLM 安全网关学习项目。�
 ```text
 HTTP 请求
 → API Key 认证并确定租户
+→ Redis 按认证租户限流
 → 创建数据库 Session 和 Provider
 → 检查重复 request_id
 → Prompt Injection 检查
@@ -32,6 +36,7 @@ HTTP 请求
 → provider.call(prompt)
 → 生成脱敏审计记录
 → PostgreSQL
+→ 返回带追踪编号的响应
 ```
 
 前三类安全检查命中高风险时，不执行 `provider.call()`。PII 命中时替换敏感字段并继续调用。当前采用短路处理，因此一条请求只记录首先命中的阻止风险。
@@ -44,7 +49,7 @@ tests/                  自动测试
 evals/                  离线安全评测样例、运行脚本和报告
 evals/reports/          可重复的基准评测报告
 evals/analysis.md       失败样例分析
-compose.yaml            PostgreSQL 开发库和测试库
+compose.yaml            Redis、PostgreSQL 开发库和测试库
 .env.example            不含真实密钥的配置示例
 requirements.txt        Python 依赖
 AGENTS.md               Codex 开发与教学规则
@@ -84,11 +89,14 @@ AGENTSHIELD_TEST_DB_NAME=agentshield_test
 
 AGENTSHIELD_API_KEY_RECORDS=[{"value":"替换为本机测试Key","tenant_id":"tenant-demo","is_active":true}]
 AGENTSHIELD_ALLOWED_TOOLS=[]
+AGENTSHIELD_REDIS_URL=redis://127.0.0.1:6379/0
+AGENTSHIELD_RATE_LIMIT_MAX_REQUESTS=60
+AGENTSHIELD_RATE_LIMIT_WINDOW_SECONDS=60
 ```
 
 默认保持 `AGENTSHIELD_MODEL_PROVIDER=mock`，避免意外联网和产生费用。真实模型密钥只能填写在本机 `.env`。
 
-### 3. 启动 PostgreSQL
+### 3. 启动 Redis 和 PostgreSQL
 
 ```powershell
 docker compose config --quiet
@@ -96,7 +104,7 @@ docker compose up -d
 docker compose ps
 ```
 
-开发库使用端口 `5432`，测试库使用端口 `5433`。
+Redis 使用端口 `6379`，开发库使用端口 `5432`，测试库使用端口 `5433`。
 
 ### 4. 启动 FastAPI
 
@@ -140,6 +148,25 @@ Mock 支持 `success`、`reject`、`failure`、`timeout` 和 `malformed` 场景�
 
 真实模型人工验证必须使用新的 `request_id` 和不含敏感信息的短 Prompt。项目曾使用 APINebula 的 OpenAI 兼容服务完成一次真实调用；这不代表已经验证所有模型服务商。
 
+## 限流与错误响应
+
+`/model/test` 与 `/model/call` 都按认证后的租户独立限流；请求体中的 `tenant_id` 不参与计数。超过次数时返回 HTTP `429` 和 `Retry-After` 响应头。Redis 不可用时采用 fail-closed（无法确认是否超限时拒绝请求）的策略，返回 HTTP `503`，请求不会继续创建 Provider 或调用模型。
+
+所有预期错误与普通路由错误都使用以下结构，并在响应头返回同一个 `X-Request-Trace-Id`：
+
+```json
+{
+  "error": {
+    "code": "RATE_LIMIT_EXCEEDED",
+    "message": "请求次数超过限制",
+    "retryable": true,
+    "trace_id": "本次请求的追踪编号"
+  }
+}
+```
+
+认证错误、请求格式错误、路由或方法错误不可重试；限流、Redis、数据库暂时不可用和未知内部错误可稍后重试。重复 `request_id` 不应原样重试，应更换编号或查询原记录。
+
 ## 验证项目
 
 ### 自动测试
@@ -149,6 +176,8 @@ Mock 支持 `success`、`reject`、`failure`、`timeout` 和 `malformed` 场景�
 ```
 
 自动测试使用 Mock、假 HTTP 和独立测试数据库，不主动调用真实模型。
+
+最近一次完整自动测试结果：134 项通过，耗时 5.90 秒。
 
 ### 离线安全评测
 
@@ -177,6 +206,8 @@ pytest 用于检查已有代码行为是否被改坏；安全评测用于衡量�
 - 响应和审计记录不保存完整 AgentShield API Key；
 - 审计摘要不保存完整 Prompt 和完整模型回答；
 - 模型调用前执行认证、重复请求检查和基础安全检查；
+- 成功和已处理失败日志可通过追踪编号排查，不记录完整 API Key、Prompt、模型回答或数据库密码；
+- Redis 不可用时阻止模型调用，避免限流失效导致意外费用；
 - 安全评测不使用真实个人信息或不受控外部网络。
 
 当前限制：
@@ -187,7 +218,8 @@ pytest 用于检查已有代码行为是否被改坏；安全评测用于衡量�
 - SSRF 预检查不能单独解决 DNS 重绑定和重定向，真实访问时仍需复检最终地址；
 - API Key 使用本机静态配置，尚无哈希密钥库、自动轮换和复杂权限系统；
 - 当前只验证过一家第三方 OpenAI 兼容服务；
-- 尚未完成 Redis 限流、Alembic 数据库迁移、压力测试、部署和监控。
+- 当前限流采用固定时间窗口；窗口边界可能出现短时间突发，`Retry-After` 返回整个窗口秒数而非精确剩余秒数；
+- 尚未完成 Alembic 数据库迁移、压力测试、部署和监控。
 
 ## 阶段状态
 
@@ -199,7 +231,7 @@ pytest 用于检查已有代码行为是否被改坏；安全评测用于衡量�
 | 7 | 已完成 | API Key 认证和租户隔离 |
 | 8 | 已完成 | Prompt、PII、工具和 SSRF 基础检查 |
 | 9 | 已完成 | 50 条离线安全评测、量化报告和失败分析 |
-| 10 | 未开始 | Redis 限流、日志和统一错误处理 |
+| 10 | 已完成 | Redis 租户限流、安全日志、请求追踪和统一错误处理 |
 | 11 | 未开始 | Docker 完整启动、数据库迁移和压力测试 |
 | 12 | 未开始 | 看板、部署、文档和求职材料 |
 

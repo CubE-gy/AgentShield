@@ -21,6 +21,9 @@ class Settings(BaseSettings):
         default="[]",
         validation_alias="AGENTSHIELD_ALLOWED_TOOLS",
     )
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    rate_limit_max_requests: int = Field(default=60, gt=0)
+    rate_limit_window_seconds: int = Field(default=60, gt=0)
 
     model_config = SettingsConfigDict(
         env_prefix="AGENTSHIELD_",

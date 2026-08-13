@@ -146,3 +146,31 @@ def test_env_example_contains_empty_tool_allowlist():
     )
 
     assert "AGENTSHIELD_ALLOWED_TOOLS=[]" in env_example
+
+
+def test_settings_reads_rate_limit_configuration(monkeypatch):
+    monkeypatch.setenv(
+        "AGENTSHIELD_DEV_DATABASE_URL",
+        "postgresql+psycopg://dev_user:dev_password@127.0.0.1:5432/dev_db",
+    )
+    monkeypatch.setenv(
+        "AGENTSHIELD_TEST_DATABASE_URL",
+        "postgresql+psycopg://test_user:test_password@127.0.0.1:5433/test_db",
+    )
+    monkeypatch.setenv("AGENTSHIELD_REDIS_URL", "redis://127.0.0.1:6380/2")
+    monkeypatch.setenv("AGENTSHIELD_RATE_LIMIT_MAX_REQUESTS", "12")
+    monkeypatch.setenv("AGENTSHIELD_RATE_LIMIT_WINDOW_SECONDS", "30")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.redis_url == "redis://127.0.0.1:6380/2"
+    assert settings.rate_limit_max_requests == 12
+    assert settings.rate_limit_window_seconds == 30
+
+
+def test_env_example_contains_safe_rate_limit_configuration():
+    env_example = Path(".env.example").read_text(encoding="utf-8")
+
+    assert "AGENTSHIELD_REDIS_URL=redis://127.0.0.1:6379/0" in env_example
+    assert "AGENTSHIELD_RATE_LIMIT_MAX_REQUESTS=60" in env_example
+    assert "AGENTSHIELD_RATE_LIMIT_WINDOW_SECONDS=60" in env_example
