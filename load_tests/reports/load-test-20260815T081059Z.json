@@ -1,0 +1,25 @@
+{
+  "timestamp_utc": "2026-08-15T08:10:59.431535+00:00",
+  "environment": {
+    "base_url": "http://127.0.0.1:8000",
+    "python_version": "3.12.8",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "git_revision": "c611132be40815e9b5b439a1d132849a883bae94"
+  },
+  "parameters": {
+    "request_count": 20,
+    "concurrency": 5
+  },
+  "results": {
+    "success_count": 20,
+    "error_count": 0,
+    "throughput_requests_per_second": 53.62,
+    "latency_ms": {
+      "average": 36.86,
+      "maximum": 71.16
+    },
+    "error_types": {}
+  },
+  "limitations": "仅在本机以 20 请求、5 并发执行；结果不能代表高并发生产能力。",
+  "observation": "本次固定参数下未发现请求错误；未进行性能瓶颈分析。"
+}
