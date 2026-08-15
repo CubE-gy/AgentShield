@@ -49,7 +49,12 @@ tests/                  自动测试
 evals/                  离线安全评测样例、运行脚本和报告
 evals/reports/          可重复的基准评测报告
 evals/analysis.md       失败样例分析
-compose.yaml            Redis、PostgreSQL 开发库和测试库
+scripts/                项目维护与验证脚本
+load_tests/reports/     本机基础压力测试报告
+Dockerfile              FastAPI 容器构建说明
+docker-entrypoint.sh    容器启动前执行数据库迁移的脚本
+compose.yaml            FastAPI、Redis、PostgreSQL 开发库和测试库
+.dockerignore           Docker 打包时排除本机密钥与缓存的清单
 .env.example            不含真实密钥的配置示例
 requirements.txt        Python 依赖
 AGENTS.md               Codex 开发与教学规则
@@ -96,23 +101,25 @@ AGENTSHIELD_RATE_LIMIT_WINDOW_SECONDS=60
 
 默认保持 `AGENTSHIELD_MODEL_PROVIDER=mock`，避免意外联网和产生费用。真实模型密钥只能填写在本机 `.env`。
 
-### 3. 启动 Redis 和 PostgreSQL
+### 3. 一条命令启动完整 Docker 服务
 
 ```powershell
 docker compose config --quiet
-docker compose up -d
+docker compose up -d --build
 docker compose ps
 ```
 
-Redis 使用端口 `6379`，开发库使用端口 `5432`，测试库使用端口 `5433`。
+该命令会启动 FastAPI、Redis、开发 PostgreSQL 和测试 PostgreSQL。FastAPI 会等待开发 PostgreSQL 与 Redis 健康后，先自动执行 `alembic upgrade head`（将数据库结构升级到最新记录），再监听电脑的 `8000` 端口。
 
-### 4. 启动 FastAPI
+`docker compose ps` 预期显示 `agentshield-app`、`agentshield-redis`、`agentshield-postgres-dev` 和 `agentshield-postgres-test`。Redis 使用端口 `6379`，开发库使用端口 `5432`，测试库使用端口 `5433`。
+
+### 4. 验证 FastAPI 与数据库迁移
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+docker compose logs app
 ```
 
-打开 `http://127.0.0.1:8000/docs` 使用 Swagger 页面，或访问健康检查：
+日志应显示 Alembic 已连接 PostgreSQL，随后 Uvicorn 启动。打开 `http://127.0.0.1:8000/docs` 使用 Swagger 页面，或访问健康检查：
 
 ```text
 GET http://127.0.0.1:8000/health
@@ -123,6 +130,23 @@ GET http://127.0.0.1:8000/health
 ```json
 {"status":"ok"}
 ```
+
+对于全新的数据库，首份迁移会创建 `audit_records` 表。对于旧项目已存在该表、但没有 Alembic 版本记录的数据库，必须先核对字段结构一致，再在项目根目录执行一次：
+
+```powershell
+.\.venv\Scripts\alembic.exe stamp head
+```
+
+`stamp`（标记）只写入迁移版本记录，不创建或删除表，也不修改审计数据。不要对字段结构未知的数据库直接执行该命令。
+
+### 5. 停止与重启
+
+```powershell
+docker compose stop
+docker compose up -d
+```
+
+`stop` 只停止容器，不删除 PostgreSQL 数据卷（Docker 保存数据库数据的持久存储位置）。正常重启后，迁移版本、审计表和审计数据应保留。不要在需要保留数据时执行 `docker compose down -v`，其中 `-v` 会删除数据卷。
 
 ## 核心接口
 
@@ -198,6 +222,26 @@ pytest 用于检查已有代码行为是否被改坏；安全评测用于衡量�
 
 详细结果见 `evals/reports/`，失败原因见 `evals/analysis.md`。该结果只代表这 50 条固定样例，不能证明系统具备完整安全防护能力。
 
+### 基础压力测试
+
+压力测试使用固定的 20 个请求和 5 个并发请求，目标为本机 Docker 中的 `POST /model/test`。它只使用 Mock，不访问真实模型，但会写入开发数据库的审计记录。
+
+先在本机 `.env` 中设置一条已启用的 AgentShield API Key：
+
+```dotenv
+AGENTSHIELD_LOAD_TEST_API_KEY=本机有效测试Key
+```
+
+确认 Docker 服务正在运行后，在项目根目录执行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_load_test.py
+```
+
+报告会保存到 `load_tests/reports/`，包含成功数、错误数、吞吐量、平均与最大延迟、测试环境、代码版本和限制说明；不保存 API Key、完整 Prompt 或模型回答。本机单次结果不能代表高并发生产能力。
+
+压力测试报告会记录运行时的 Git 提交版本。完成代码提交后，应重新运行该命令并将对应版本的基准结果、实际观察和限制写入本节。
+
 ## 安全边界与已知限制
 
 已经采取的保护：
@@ -219,7 +263,8 @@ pytest 用于检查已有代码行为是否被改坏；安全评测用于衡量�
 - API Key 使用本机静态配置，尚无哈希密钥库、自动轮换和复杂权限系统；
 - 当前只验证过一家第三方 OpenAI 兼容服务；
 - 当前限流采用固定时间窗口；窗口边界可能出现短时间突发，`Retry-After` 返回整个窗口秒数而非精确剩余秒数；
-- 尚未完成 Alembic 数据库迁移、压力测试、部署和监控。
+- 已完成一次固定 20 请求、5 并发的本机 Mock 压力测试；尚未进行高并发、长时间或真实模型压力测试；
+- 尚未完成部署和监控。
 
 ## 阶段状态
 
@@ -232,7 +277,7 @@ pytest 用于检查已有代码行为是否被改坏；安全评测用于衡量�
 | 8 | 已完成 | Prompt、PII、工具和 SSRF 基础检查 |
 | 9 | 已完成 | 50 条离线安全评测、量化报告和失败分析 |
 | 10 | 已完成 | Redis 租户限流、安全日志、请求追踪和统一错误处理 |
-| 11 | 未开始 | Docker 完整启动、数据库迁移和压力测试 |
+| 11 | 进行中 | Docker 完整启动、数据库迁移、重启数据保留和基础压力测试已验证；待提交和最终核对 |
 | 12 | 未开始 | 看板、部署、文档和求职材料 |
 
 完整阶段目标和开发规则以 `AGENTS.md` 为准，README 不重复保存开发过程。
