@@ -1,4 +1,6 @@
-from sqlalchemy import select
+from collections import Counter
+
+from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -73,3 +75,57 @@ def get_audit_record_for_tenant(
         )
 
     return record
+
+
+def get_dashboard_summary_for_tenant(
+    session: Session,
+    tenant_id: str,
+    page: int = 1,
+    page_size: int = 10,
+) -> dict:
+    """返回指定租户的看板汇总和最近审计记录。"""
+
+    try:
+        recent_records = list(
+            session.scalars(
+                select(AuditRecord)
+                .where(AuditRecord.tenant_id == tenant_id)
+                .order_by(desc(AuditRecord.created_at))
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        all_records = list(
+            session.scalars(
+                select(AuditRecord)
+                .where(AuditRecord.tenant_id == tenant_id)
+            )
+        )
+    except OperationalError as exc:
+        raise DatabaseUnavailableError("数据库不可用") from exc
+
+    risk_type_counts = Counter(
+        risk_type
+        for record in all_records
+        if (risk_type := _get_security_risk_type(record.summary)) is not None
+    )
+
+    return {
+        "total_requests": len(all_records),
+        "blocked_requests": sum(
+            record.status == "blocked" for record in all_records
+        ),
+        "risk_type_counts": dict(sorted(risk_type_counts.items())),
+        "recent_audit_records": recent_records,
+    }
+
+
+def _get_security_risk_type(summary: str) -> str | None:
+    """从不含完整提示词的审计摘要中读取已记录的风险类型。"""
+
+    prefix = "security_risk_type="
+    for part in summary.split(";"):
+        if part.startswith(prefix):
+            return part.removeprefix(prefix)
+
+    return None

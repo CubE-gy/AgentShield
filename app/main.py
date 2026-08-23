@@ -1,7 +1,10 @@
 from uuid import uuid4
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, Request
+from fastapi import Depends, FastAPI, Query, Request, Security
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -26,6 +29,7 @@ from app.audit_repository import (
     DatabaseUnavailableError,
     DuplicateRequestIdError,
     get_audit_record_for_tenant,
+    get_dashboard_summary_for_tenant,
 )
 from app.error_handling import create_error_response
 
@@ -51,6 +55,14 @@ class ModelCallRequest(BaseModel):
 
 settings = Settings()
 
+DASHBOARD_PAGE_PATH = Path(__file__).with_name("dashboard.html")
+DASHBOARD_PAGE_SIZE = 10
+api_key_header = APIKeyHeader(
+    name="X-API-Key",
+    scheme_name="AgentShieldApiKey",
+    auto_error=False,
+)
+
 app = FastAPI(title="AgentShield")
 
 
@@ -66,7 +78,7 @@ async def add_request_trace_id(request: Request, call_next):
 
 def get_authenticated_tenant(
     request: Request,
-    x_api_key: str | None = Header(default=None),
+    x_api_key: str | None = Security(api_key_header),
 ) -> str:
     """验证请求头中的 Key，并返回认证后的租户编号。"""
 
@@ -342,3 +354,59 @@ def get_audit_record(
         "latency_ms": record.latency_ms,
         "summary": record.summary,
     }
+
+
+@app.get("/dashboard/summary")
+def get_dashboard_summary(
+    tenant_id: str = Depends(get_authenticated_tenant),
+    page: int = Query(default=1, ge=1),
+):
+    session = SessionLocal()
+
+    try:
+        dashboard_summary = get_dashboard_summary_for_tenant(
+            session=session,
+            tenant_id=tenant_id,
+            page=page,
+            page_size=DASHBOARD_PAGE_SIZE,
+        )
+    finally:
+        session.close()
+
+    return {
+        "total_requests": dashboard_summary["total_requests"],
+        "blocked_requests": dashboard_summary["blocked_requests"],
+        "risk_type_counts": dashboard_summary["risk_type_counts"],
+        "pagination": {
+            "page": page,
+            "page_size": DASHBOARD_PAGE_SIZE,
+            "total_pages": max(
+                1,
+                (
+                    dashboard_summary["total_requests"]
+                    + DASHBOARD_PAGE_SIZE
+                    - 1
+                ) // DASHBOARD_PAGE_SIZE,
+            ),
+        },
+        "recent_audit_records": [
+            {
+                "request_id": record.request_id,
+                "agent_id": record.agent_id,
+                "created_at": record.created_at.isoformat(),
+                "risk_level": record.risk_level,
+                "status": record.status,
+                "error_code": record.error_code,
+                "latency_ms": record.latency_ms,
+                "summary": record.summary,
+            }
+            for record in dashboard_summary["recent_audit_records"]
+        ],
+    }
+
+
+@app.get("/dashboard", include_in_schema=False)
+def get_dashboard_page():
+    """返回本机演示用的看板页面，不嵌入密钥或审计数据。"""
+
+    return FileResponse(DASHBOARD_PAGE_PATH, media_type="text/html")

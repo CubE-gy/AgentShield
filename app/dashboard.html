@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AgentShield 本地演示看板</title>
+    <style>
+      :root { color-scheme: light; font-family: "Microsoft YaHei", sans-serif; }
+      body { background: #f5f7fb; color: #172033; margin: 0; }
+      main { margin: 0 auto; max-width: 1080px; padding: 36px 20px 56px; }
+      h1 { margin-bottom: 8px; }
+      .hint { color: #526176; line-height: 1.6; }
+      .login { align-items: end; background: #fff; border-radius: 12px; display: flex; gap: 12px; margin: 24px 0; padding: 20px; }
+      label { display: grid; flex: 1; font-weight: 600; gap: 8px; }
+      .api-key-controls { display: flex; gap: 8px; }
+      input { border: 1px solid #aab7ca; border-radius: 6px; flex: 1; font: inherit; min-width: 0; padding: 10px; }
+      input::-ms-reveal { display: none; }
+      button { background: #155eef; border: 0; border-radius: 6px; color: #fff; cursor: pointer; font: inherit; font-weight: 700; padding: 11px 16px; }
+      button:hover { background: #004eeb; }
+      button:disabled { background: #8ba8e8; cursor: wait; }
+      .key-toggle, .clear-button { background: #e7efff; color: #174ea6; }
+      .key-toggle:hover, .clear-button:hover { background: #d4e2ff; }
+      .message { min-height: 24px; color: #a51d2d; }
+      .message[data-state="loading"] { color: #174ea6; }
+      .message[data-state="success"] { color: #12653d; }
+      .message[data-state="empty"] { color: #526176; }
+      .metrics { display: grid; gap: 16px; grid-template-columns: repeat(3, 1fr); margin: 20px 0; }
+      .card, section { background: #fff; border-radius: 12px; padding: 20px; }
+      .card span { color: #526176; display: block; }
+      .card strong { display: block; font-size: 32px; margin-top: 10px; }
+      .risk-list { list-style: none; margin: 12px 0 0; padding: 0; }
+      .risk-list li { align-items: center; border-top: 1px solid #e4e9f2; display: flex; justify-content: space-between; padding: 8px 0; }
+      .risk-list li:first-child { border-top: 0; }
+      .risk-list strong { font-size: 18px; margin: 0; }
+      .risk-list .empty { display: block; padding: 8px 0; }
+      table { border-collapse: collapse; width: 100%; }
+      .table-wrapper { overflow-x: auto; }
+      .table-wrapper table { min-width: 760px; table-layout: fixed; }
+      .request-id-column { width: 25%; }
+      .time-column { width: 26%; }
+      .status-column { width: 13%; }
+      .risk-level-column { width: 13%; }
+      .summary-column { width: 23%; }
+      .pagination { align-items: center; display: flex; gap: 12px; justify-content: end; margin-top: 16px; }
+      .pagination button { padding: 8px 12px; }
+      .page-info { color: #526176; font-weight: 700; }
+      th, td { border-bottom: 1px solid #e4e9f2; padding: 10px 8px; text-align: left; vertical-align: top; }
+      .request-id-column, .summary-column { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .time-column { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .time-column, .status-column, .risk-level-column { white-space: nowrap; }
+      th { color: #526176; font-size: 14px; }
+      .empty { color: #526176; }
+      .badge { border-radius: 999px; display: inline-block; font-size: 13px; font-weight: 700; padding: 4px 8px; white-space: nowrap; }
+      .status-success { background: #dff7e8; color: #12653d; }
+      .status-blocked, .status-rejected { background: #ffe4e8; color: #a51d2d; }
+      .status-failed, .status-timeout { background: #fff0cf; color: #7a4b00; }
+      .risk-low { background: #e7efff; color: #174ea6; }
+      .risk-medium { background: #fff0cf; color: #7a4b00; }
+      .risk-high { background: #ffe4e8; color: #a51d2d; }
+      @media (max-width: 700px) { .login { align-items: stretch; flex-direction: column; } .metrics { grid-template-columns: 1fr; } table { font-size: 13px; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>AgentShield 本地演示看板</h1>
+      <p class="hint">输入本机有效 API Key 后，页面只显示该 Key 所属租户的审计汇总。密钥不会写入网址或浏览器本地存储。</p>
+
+      <div class="login">
+        <label>API Key
+          <span class="api-key-controls">
+            <input id="api-key" type="password" autocomplete="off" placeholder="输入本机有效 API Key">
+            <button id="toggle-api-key" class="key-toggle" type="button" aria-pressed="false">显示 Key</button>
+          </span>
+        </label>
+        <button id="clear-api-key" class="clear-button" type="button">清空</button>
+        <button id="refresh" type="button">刷新数据</button>
+      </div>
+      <p id="message" class="message" aria-live="polite"></p>
+
+      <div class="metrics">
+        <div class="card"><span>请求总数</span><strong id="total-requests">—</strong></div>
+        <div class="card"><span>被阻止数</span><strong id="blocked-requests">—</strong></div>
+        <div class="card">
+          <span>风险类型</span>
+          <ul id="risk-type-list" class="risk-list" aria-live="polite">
+            <li class="empty">刷新后显示风险类型。</li>
+          </ul>
+        </div>
+      </div>
+
+      <section>
+        <h2>最近审计记录</h2>
+        <div id="records" class="table-wrapper">请输入 API Key 后刷新数据。</div>
+        <div id="pagination" class="pagination" hidden>
+          <button id="previous-page" type="button" disabled>上一页</button>
+          <span id="page-info" class="page-info">第 1 / 1 页</span>
+          <button id="next-page" type="button" disabled>下一页</button>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const apiKeyInput = document.querySelector("#api-key");
+      const apiKeyToggle = document.querySelector("#toggle-api-key");
+      const clearApiKeyButton = document.querySelector("#clear-api-key");
+      const refreshButton = document.querySelector("#refresh");
+      const message = document.querySelector("#message");
+      const recordsContainer = document.querySelector("#records");
+      const riskTypeList = document.querySelector("#risk-type-list");
+      const pagination = document.querySelector("#pagination");
+      const previousPageButton = document.querySelector("#previous-page");
+      const nextPageButton = document.querySelector("#next-page");
+      const pageInfo = document.querySelector("#page-info");
+      let currentPage = 1;
+      const riskTypeLabels = {
+        pii: "PII 脱敏",
+        prompt_injection: "Prompt Injection",
+        ssrf: "SSRF",
+        tool: "工具允许名单",
+      };
+      const statusLabels = {
+        success: "成功",
+        blocked: "已阻止",
+        rejected: "已拒绝",
+        failed: "失败",
+        timeout: "超时",
+      };
+      const riskLevelLabels = {
+        low: "低风险",
+        medium: "中风险",
+        high: "高风险",
+      };
+      const auditColumns = [
+        { title: "请求编号", className: "request-id-column" },
+        { title: "时间", className: "time-column" },
+        { title: "状态", className: "status-column" },
+        { title: "风险等级", className: "risk-level-column" },
+        { title: "摘要", className: "summary-column" },
+      ];
+
+      function addCell(row, value, className) {
+        const cell = document.createElement("td");
+        if (className) {
+          cell.className = className;
+        }
+        cell.textContent = value ?? "—";
+        if (value) {
+          cell.title = value;
+        }
+        row.append(cell);
+      }
+
+      function setMessage(text, state) {
+        message.textContent = text;
+        message.dataset.state = state;
+      }
+
+      function setLoadingState(isLoading) {
+        refreshButton.disabled = isLoading;
+        refreshButton.textContent = isLoading ? "正在读取…" : "刷新数据";
+        if (isLoading) {
+          previousPageButton.disabled = true;
+          nextPageButton.disabled = true;
+        }
+      }
+
+      function setApiKeyVisibility(isVisible) {
+        apiKeyInput.type = isVisible ? "text" : "password";
+        apiKeyToggle.setAttribute("aria-pressed", String(isVisible));
+        apiKeyToggle.textContent = isVisible ? "隐藏 Key" : "显示 Key";
+      }
+
+      function addBadgeCell(row, value, labels, badgeClass, columnClass) {
+        const cell = document.createElement("td");
+        cell.className = columnClass;
+        const badge = document.createElement("span");
+        badge.className = `badge ${badgeClass}-${value}`;
+        badge.textContent = labels[value] || value || "—";
+        cell.append(badge);
+        row.append(cell);
+      }
+
+      function renderRecords(records) {
+        recordsContainer.replaceChildren();
+        if (records.length === 0) {
+          recordsContainer.textContent = "暂无审计记录。";
+          return;
+        }
+
+        const table = document.createElement("table");
+        const columnGroup = document.createElement("colgroup");
+        auditColumns.forEach((column) => {
+          const columnElement = document.createElement("col");
+          columnElement.className = column.className;
+          columnGroup.append(columnElement);
+        });
+        table.append(columnGroup);
+        const header = table.insertRow();
+        auditColumns.forEach((column) => {
+          addCell(header, column.title, column.className);
+        });
+        records.forEach((record) => {
+          const row = table.insertRow();
+          addCell(row, record.request_id, "request-id-column");
+          addCell(row, record.created_at, "time-column");
+          addBadgeCell(
+            row,
+            record.status,
+            statusLabels,
+            "status",
+            "status-column",
+          );
+          addBadgeCell(
+            row,
+            record.risk_level,
+            riskLevelLabels,
+            "risk",
+            "risk-level-column",
+          );
+          addCell(row, record.summary, "summary-column");
+        });
+        recordsContainer.append(table);
+      }
+
+      function renderRiskTypes(riskTypeCounts) {
+        riskTypeList.replaceChildren();
+        const entries = Object.entries(riskTypeCounts);
+        if (entries.length === 0) {
+          const empty = document.createElement("li");
+          empty.className = "empty";
+          empty.textContent = "暂无风险类型。";
+          riskTypeList.append(empty);
+          return;
+        }
+
+        entries.forEach(([riskType, count]) => {
+          const item = document.createElement("li");
+          const name = document.createElement("span");
+          const value = document.createElement("strong");
+          name.textContent = riskTypeLabels[riskType] || riskType;
+          value.textContent = count;
+          item.append(name, value);
+          riskTypeList.append(item);
+        });
+      }
+
+      function renderPagination(paginationData) {
+        pagination.hidden = false;
+        pageInfo.textContent = `第 ${paginationData.page} / ${paginationData.total_pages} 页`;
+        previousPageButton.disabled = paginationData.page <= 1;
+        nextPageButton.disabled = paginationData.page >= paginationData.total_pages;
+      }
+
+      async function refreshDashboard(page = currentPage) {
+        const apiKey = apiKeyInput.value;
+        if (!apiKey) {
+          setMessage("请输入 API Key。", "error");
+          return;
+        }
+
+        setLoadingState(true);
+        setMessage("正在读取数据…", "loading");
+        try {
+          const response = await fetch(`/dashboard/summary?page=${page}`, {
+            headers: { "X-API-Key": apiKey },
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            setMessage(
+              data.error?.message || "读取失败，请稍后重试。",
+              "error",
+            );
+            return;
+          }
+
+          document.querySelector("#total-requests").textContent = data.total_requests;
+          document.querySelector("#blocked-requests").textContent = data.blocked_requests;
+          renderRiskTypes(data.risk_type_counts);
+          renderRecords(data.recent_audit_records);
+          currentPage = data.pagination.page;
+          renderPagination(data.pagination);
+          setMessage(
+            data.total_requests === 0 ? "暂无审计记录。" : "数据已刷新。",
+            data.total_requests === 0 ? "empty" : "success",
+          );
+        } catch {
+          setMessage(
+            "无法连接本机服务，请确认 Docker 服务正在运行。",
+            "error",
+          );
+        } finally {
+          setLoadingState(false);
+        }
+      }
+
+      refreshButton.addEventListener("click", () => refreshDashboard(1));
+      previousPageButton.addEventListener("click", () => {
+        refreshDashboard(currentPage - 1);
+      });
+      nextPageButton.addEventListener("click", () => {
+        refreshDashboard(currentPage + 1);
+      });
+      apiKeyToggle.addEventListener("click", () => {
+        setApiKeyVisibility(apiKeyInput.type === "password");
+      });
+      clearApiKeyButton.addEventListener("click", () => {
+        apiKeyInput.value = "";
+        setApiKeyVisibility(false);
+        setMessage("已清空当前页面的 API Key 输入。", "empty");
+        apiKeyInput.focus();
+      });
+    </script>
+  </body>
+</html>

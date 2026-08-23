@@ -588,6 +588,246 @@ def test_audit_endpoint_hides_other_tenant_record(monkeypatch):
     )
 
 
+def create_dashboard_audit_record(
+    *,
+    request_id: str,
+    tenant_id: str,
+    created_at: datetime,
+    risk_level: str,
+    status: str,
+    summary: str,
+) -> None:
+    session = main_module.SessionLocal()
+
+    try:
+        save_audit_record(
+            session,
+            request_id=request_id,
+            tenant_id=tenant_id,
+            agent_id="agent-support",
+            created_at=created_at,
+            risk_level=risk_level,
+            status=status,
+            error_code=None,
+            latency_ms=120,
+            summary=summary,
+            summary_hash="d" * 64,
+        )
+    finally:
+        session.close()
+
+
+def test_dashboard_summary_returns_only_authenticated_tenant_data():
+    create_dashboard_audit_record(
+        request_id="req-dashboard-success",
+        tenant_id="tenant-alpha",
+        created_at=datetime(2026, 8, 7, 10, 0, tzinfo=timezone.utc),
+        risk_level="low",
+        status="success",
+        summary="model_status=success",
+    )
+    create_dashboard_audit_record(
+        request_id="req-dashboard-blocked",
+        tenant_id="tenant-alpha",
+        created_at=datetime(2026, 8, 7, 11, 0, tzinfo=timezone.utc),
+        risk_level="high",
+        status="blocked",
+        summary=(
+            "model_status=blocked;security_risk_type=prompt_injection;"
+            "security_action=blocked"
+        ),
+    )
+    create_dashboard_audit_record(
+        request_id="req-dashboard-masked",
+        tenant_id="tenant-alpha",
+        created_at=datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc),
+        risk_level="medium",
+        status="success",
+        summary=(
+            "model_status=success;security_risk_type=pii;"
+            "security_action=masked"
+        ),
+    )
+    create_dashboard_audit_record(
+        request_id="req-dashboard-other-tenant",
+        tenant_id="tenant-beta",
+        created_at=datetime(2026, 8, 7, 13, 0, tzinfo=timezone.utc),
+        risk_level="high",
+        status="blocked",
+        summary=(
+            "model_status=blocked;security_risk_type=url_ssrf;"
+            "security_action=blocked"
+        ),
+    )
+
+    response = client.get("/dashboard/summary")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_requests": 3,
+        "blocked_requests": 1,
+        "risk_type_counts": {
+            "pii": 1,
+            "prompt_injection": 1,
+        },
+        "pagination": {
+            "page": 1,
+            "page_size": 10,
+            "total_pages": 1,
+        },
+        "recent_audit_records": [
+            {
+                "request_id": "req-dashboard-masked",
+                "agent_id": "agent-support",
+                "created_at": "2026-08-07T12:00:00",
+                "risk_level": "medium",
+                "status": "success",
+                "error_code": None,
+                "latency_ms": 120,
+                "summary": (
+                    "model_status=success;security_risk_type=pii;"
+                    "security_action=masked"
+                ),
+            },
+            {
+                "request_id": "req-dashboard-blocked",
+                "agent_id": "agent-support",
+                "created_at": "2026-08-07T11:00:00",
+                "risk_level": "high",
+                "status": "blocked",
+                "error_code": None,
+                "latency_ms": 120,
+                "summary": (
+                    "model_status=blocked;security_risk_type=prompt_injection;"
+                    "security_action=blocked"
+                ),
+            },
+            {
+                "request_id": "req-dashboard-success",
+                "agent_id": "agent-support",
+                "created_at": "2026-08-07T10:00:00",
+                "risk_level": "low",
+                "status": "success",
+                "error_code": None,
+                "latency_ms": 120,
+                "summary": "model_status=success",
+            },
+        ],
+    }
+
+
+def test_dashboard_summary_returns_stable_empty_result():
+    response = client.get("/dashboard/summary")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_requests": 0,
+        "blocked_requests": 0,
+        "risk_type_counts": {},
+        "pagination": {
+            "page": 1,
+            "page_size": 10,
+            "total_pages": 1,
+        },
+        "recent_audit_records": [],
+    }
+
+
+def test_dashboard_summary_rejects_missing_api_key():
+    unauthenticated_client = TestClient(app)
+
+    response = unauthenticated_client.get("/dashboard/summary")
+
+    assert_error_response(
+        response,
+        status_code=401,
+        code="API_KEY_MISSING",
+        message="缺少 API Key",
+        retryable=False,
+    )
+
+
+def test_dashboard_page_loads_without_embedded_key_or_audit_data():
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "AgentShield 本地演示看板" in response.text
+    assert 'id="risk-type-list"' in response.text
+    assert 'class="table-wrapper"' in response.text
+    assert "statusLabels" in response.text
+    assert "setLoadingState" in response.text
+    assert 'id="toggle-api-key"' in response.text
+    assert 'id="clear-api-key"' in response.text
+    assert 'id="previous-page"' in response.text
+    assert 'id="next-page"' in response.text
+    assert "table-layout: fixed" in response.text
+    assert 'createElement("colgroup")' in response.text
+    assert ".time-column { overflow: hidden" in response.text
+    assert "test-active-key" not in response.text
+
+
+def test_dashboard_summary_returns_requested_page_for_authenticated_tenant():
+    for index in range(11):
+        create_dashboard_audit_record(
+            request_id=f"req-dashboard-page-{index:02d}",
+            tenant_id="tenant-alpha",
+            created_at=datetime(2026, 8, 7, 10, index, tzinfo=timezone.utc),
+            risk_level="low",
+            status="success",
+            summary="model_status=success",
+        )
+    create_dashboard_audit_record(
+        request_id="req-dashboard-page-other-tenant",
+        tenant_id="tenant-beta",
+        created_at=datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc),
+        risk_level="high",
+        status="blocked",
+        summary=(
+            "model_status=blocked;security_risk_type=ssrf;"
+            "security_action=blocked"
+        ),
+    )
+
+    response = client.get("/dashboard/summary?page=2")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_requests"] == 11
+    assert body["blocked_requests"] == 0
+    assert body["risk_type_counts"] == {}
+    assert body["pagination"] == {
+        "page": 2,
+        "page_size": 10,
+        "total_pages": 2,
+    }
+    assert [record["request_id"] for record in body["recent_audit_records"]] == [
+        "req-dashboard-page-00"
+    ]
+    assert "req-dashboard-success" not in response.text
+
+
+def test_openapi_configures_reusable_api_key_authorization():
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    schema = response.json()
+    assert schema["components"]["securitySchemes"]["AgentShieldApiKey"] == {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+    }
+    assert schema["paths"]["/model/test"]["post"]["security"] == [
+        {"AgentShieldApiKey": []}
+    ]
+    assert schema["paths"]["/audit/{request_id}"]["get"]["security"] == [
+        {"AgentShieldApiKey": []}
+    ]
+    assert schema["paths"]["/dashboard/summary"]["get"]["security"] == [
+        {"AgentShieldApiKey": []}
+    ]
+
+
 def test_model_endpoint_returns_unified_rate_limit_error(monkeypatch):
     def raise_rate_limit_error(tenant_id):
         raise RateLimitExceededError("limit exceeded")

@@ -51,6 +51,9 @@ evals/reports/          可重复的基准评测报告
 evals/analysis.md       失败样例分析
 scripts/                项目维护与验证脚本
 load_tests/reports/     本机基础压力测试报告
+docs/demo-guide.md      三分钟本地演示流程
+docs/architecture.md    当前架构图与设计取舍
+docs/local-deployment.md 本地 Docker 部署与演示验收
 Dockerfile              FastAPI 容器构建说明
 docker-entrypoint.sh    容器启动前执行数据库迁移的脚本
 compose.yaml            FastAPI、Redis、PostgreSQL 开发库和测试库
@@ -155,6 +158,8 @@ docker compose up -d
 | `POST /model/test` | 固定使用 Mock，适合日常测试和人工演示 |
 | `POST /model/call` | 使用本机配置的正式 Provider，可能访问外部模型并产生费用 |
 | `GET /audit/{request_id}` | 查询当前认证租户自己的审计记录 |
+| `GET /dashboard` | 本地网页看板；输入 API Key 后显示当前租户的汇总与最近 10 条记录 |
+| `GET /dashboard/summary?page=页码` | 供本地网页看板读取的认证后汇总数据接口；审计记录每页 10 条 |
 
 三个接口都需要在请求头填写 `X-API-Key`。请求体中的 `tenant_id` 不作为租户依据。
 
@@ -171,6 +176,14 @@ docker compose up -d
 Mock 支持 `success`、`reject`、`failure`、`timeout` 和 `malformed` 场景。`tool_name` 与 `target_url` 是可选字段，只在对应安全检查中填写。
 
 真实模型人工验证必须使用新的 `request_id` 和不含敏感信息的短 Prompt。项目曾使用 APINebula 的 OpenAI 兼容服务完成一次真实调用；这不代表已经验证所有模型服务商。
+
+## 三分钟本地演示
+
+`docs/demo-guide.md` 提供正常请求、Prompt Injection 阻止、PII 脱敏和审计查询的完整演示步骤。演示只使用 Mock，不访问真实模型或产生模型费用。启动 Docker 服务后，打开 `http://127.0.0.1:8000/docs` 按文档操作；本地看板地址为 `http://127.0.0.1:8000/dashboard`。
+
+当前组件关系与设计取舍见 `docs/architecture.md`。
+
+本机 Docker 启动、演示验收与当前部署边界见 `docs/local-deployment.md`。
 
 ## 限流与错误响应
 
@@ -287,7 +300,7 @@ AGENTSHIELD_LOAD_TEST_API_KEY=本机有效测试Key
 | 9 | 已完成 | 50 条离线安全评测、量化报告和失败分析 |
 | 10 | 已完成 | Redis 租户限流、安全日志、请求追踪和统一错误处理 |
 | 11 | 已完成 | Docker 完整启动、数据库迁移、重启数据保留和基础压力测试已验证 |
-| 12 | 未开始 | 看板、部署、文档和求职材料 |
+| 12 | 进行中 | 本地看板与三分钟演示流程 |
 
 完整阶段目标和开发规则以 `AGENTS.md` 为准，README 不重复保存开发过程。
 
